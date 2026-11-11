@@ -189,6 +189,7 @@ func TestReportNeverMeasuresOrWrites(t *testing.T) {
 	}
 	img := mustAsset(t, s, AssetInput{Name: ptr("img"), Type: ptr("sprite"), License: ptr("CC0-1.0"), AddProjects: []string{p.ID}}, "img.png", paletteImage(t, 8, 8, color.NRGBA{255, 0, 0, 255}))
 	snd := mustAsset(t, s, AssetInput{Name: ptr("snd"), Type: ptr("sfx"), License: ptr("CC0-1.0"), AddProjects: []string{p.ID}}, "snd.wav", fitWavBytes(44100, 1, 16, 4410, 0.5))
+	forgetMeasurements(t, s, snd.ID) // the upload measured it; this test is about an unmeasured one
 	// If anything tried to read the files, it would fail or fill the caches.
 	for _, a := range []*Asset{img, snd} {
 		if err := os.Remove(filepath.Join(s.assetDir(a.ID), "files", a.Files[0].Filename)); err != nil {
@@ -263,6 +264,7 @@ func TestStoredMeasurementsFollowTheFile(t *testing.T) {
 	}
 	// A trashed asset is not touched.
 	b := mustAsset(t, s, AssetInput{Name: ptr("gone"), Type: ptr("sfx"), License: ptr("CC0-1.0")}, "gone.wav", fitWavBytes(44100, 1, 16, 4410, 0.5))
+	forgetMeasurements(t, s, b.ID)
 	if _, err := s.Bulk(ctx, BulkOp{IDs: []string{b.ID}, Action: "trash"}); err != nil {
 		t.Fatal(err)
 	}
@@ -377,5 +379,14 @@ func TestMdEscapeNeutralisesLinks(t *testing.T) {
 	}
 	if got := mdEscape("see www.example.com"); got != `see www\.example.com` {
 		t.Errorf("www: %q", got)
+	}
+}
+
+// forgetMeasurements drops the attributes an upload measured, so a test can
+// start from an asset hoard knows nothing about.
+func forgetMeasurements(t *testing.T, s *Service, id string) {
+	t.Helper()
+	if _, err := s.db.Exec(`UPDATE assets SET attrs = '{}' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
 	}
 }
