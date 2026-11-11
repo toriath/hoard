@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"hash/crc32"
 	"image/color"
 	"strings"
@@ -85,7 +86,7 @@ func TestParseComfyAndDrawThings(t *testing.T) {
 		"7":{"class_type":"CLIPTextEncode","inputs":{"text":"ugly"}}}`
 	imp := importFromChunks(readPNGText(bytes.NewReader(pngWithChunks(t,
 		textChunkBytes("prompt", graph), textChunkBytes("workflow", `{"nodes":[]}`)))))
-	if imp == nil || imp.prompt != "a coin" || imp.gen["tool"] != "ComfyUI" || imp.gen["seed"] != float64(42) ||
+	if imp == nil || imp.prompt != "a coin" || imp.gen["tool"] != "ComfyUI" || imp.gen["seed"] != json.Number("42") ||
 		imp.gen["model"] != "sd15.safetensors" || imp.gen["negative_prompt"] != "ugly" || imp.gen["width"] != 512 {
 		t.Fatalf("comfy: %+v", imp)
 	}
@@ -144,8 +145,8 @@ func TestImportOnUploadFillsOnlyEmptyFields(t *testing.T) {
 	if got.Prompt != "my own prompt" || got.Generator["seed"] != 5.0 || got.Generator["tool"] != "Draw Things" {
 		t.Fatalf("user data overwritten: %q %v", got.Prompt, got.Generator)
 	}
-	if got.Generator["model"] != "pixelDiffusion" { // missing keys are filled
-		t.Errorf("missing key not filled: %v", got.Generator)
+	if _, ok := got.Generator["model"]; ok { // a recipe that names another tool is left alone
+		t.Errorf("keys of another tool merged: %v", got.Generator)
 	}
 	// A file without metadata changes nothing and records nothing.
 	c := mustAsset(t, s, AssetInput{Name: ptr("plain")}, "plain.png", pngBytes(t, 4, 4, color.White))

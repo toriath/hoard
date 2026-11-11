@@ -393,6 +393,13 @@ func (s *Service) RenameTag(ctx context.Context, from, to string) (int, error) {
 				return err
 			}
 		}
+		if len(ids) > 0 && to != from {
+			target := to
+			if target == "" {
+				target = "(deleted)"
+			}
+			s.record(ctx, tx, "tag.rename", "", "", fmt.Sprintf("%s → %s (%d assets)", from, target, len(ids)))
+		}
 		return nil
 	})
 	if err != nil {

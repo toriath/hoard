@@ -50,6 +50,8 @@ func TestActivityLineageRecipeREST(t *testing.T) {
 		t.Errorf("recipe = %+v", r)
 	}
 	e.do("GET", "/api/v1/assets/ast_000000000000/recipe", nil, nil, http.StatusNotFound, nil)
+	e.do("GET", "/api/v1/activity?since=yesterday", nil, nil, http.StatusBadRequest, nil)
+	e.do("GET", "/api/v1/activity?since=2026-01-01T00:00:00%2B02:00", nil, nil, http.StatusOK, nil)
 	// Needs authentication like the rest of the API.
 	e.send(&http.Client{}, "GET", "/api/v1/activity", nil, nil, http.StatusUnauthorized, nil)
 }

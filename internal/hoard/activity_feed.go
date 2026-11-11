@@ -27,14 +27,16 @@ const ActivityRetentionDays = 365
 // ListActivityFeed is ListActivity with asset names and thumbnail versions
 // added in one batched query.
 func (s *Service) ListActivityFeed(ctx context.Context, q ActivityQuery) (*ActivityFeed, error) {
+	// Read before the items so that latest_seq can only lag behind them.
+	var latest int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM activity`).Scan(&latest); err != nil {
+		return nil, err
+	}
 	items, err := s.ListActivity(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	feed := &ActivityFeed{Items: make([]ActivityEntry, len(items))}
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM activity`).Scan(&feed.LatestSeq); err != nil {
-		return nil, err
-	}
+	feed := &ActivityFeed{Items: make([]ActivityEntry, len(items)), LatestSeq: latest}
 	seen := map[string]bool{}
 	var ids []any
 	for _, a := range items {

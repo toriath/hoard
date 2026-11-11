@@ -1,5 +1,5 @@
-import { Activity as ActivityIcon, Bot, User } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Activity as ActivityIcon, Bot, Cog, User } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { historyApi } from '../lib/api-history'
 import { thumbUrl } from '../lib/api'
 import { timeAgo } from '../lib/format'
@@ -54,6 +54,8 @@ export function ActivityPage() {
   const [entries, setEntries] = useState<ActivityEntry[]>([])
   const [loading, setLoading] = useState(true)
   const latest = useRef(0)
+  const loaded = useRef(false)
+  const generation = useRef(0)
 
   const action = KINDS.find((k) => k.id === kind)!.action
   const viaFilter = VIAS.find((v) => v.id === via)!.via
@@ -61,11 +63,16 @@ export function ActivityPage() {
   // Full load whenever filters or the page size change.
   useEffect(() => {
     const ctl = new AbortController()
+    const gen = ++generation.current
+    loaded.current = false
     setLoading(true)
     historyApi
       .activity({ action, via: viaFilter, limit }, ctl.signal)
       .then((f) => {
+        if (gen !== generation.current) return
+        // latest_seq was read before the items, so nothing between it and the page is missed.
         latest.current = f.latest_seq
+        loaded.current = true
         setEntries(f.items)
         setLoading(false)
       })
@@ -78,25 +85,36 @@ export function ActivityPage() {
   }, [action, viaFilter, limit])
 
   // Poll for new entries with after_seq; skipped while the tab is hidden.
-  const poll = useCallback(async () => {
-    if (document.hidden || latest.current === 0) return
-    try {
-      const f = await historyApi.activity({ action, via: viaFilter, after: latest.current, limit: MAX })
-      latest.current = Math.max(latest.current, f.latest_seq)
-      if (f.items.length) setEntries((cur) => [...[...f.items].reverse(), ...cur])
-    } catch {
-      /* the next tick tries again */
-    }
-  }, [action, viaFilter])
   useEffect(() => {
+    const ctl = new AbortController()
+    const gen = generation.current
+    const poll = async () => {
+      if (document.hidden || !loaded.current || gen !== generation.current) return
+      try {
+        const f = await historyApi.activity({ action, via: viaFilter, after: latest.current, limit: MAX }, ctl.signal)
+        if (ctl.signal.aborted || gen !== generation.current) return
+        // Advance by what was received, not by latest_seq: a page may be shorter than the log.
+        for (const e of f.items) latest.current = Math.max(latest.current, e.seq)
+        if (f.items.length) {
+          setEntries((cur) => {
+            const bySeq = new Map<number, ActivityEntry>()
+            for (const e of [...f.items, ...cur]) bySeq.set(e.seq, e)
+            return [...bySeq.values()].sort((x, y) => y.seq - x.seq)
+          })
+        }
+      } catch {
+        /* the next tick tries again */
+      }
+    }
     const t = setInterval(poll, REFRESH_MS)
     const onVisible = () => !document.hidden && poll()
     document.addEventListener('visibilitychange', onVisible)
     return () => {
+      ctl.abort()
       clearInterval(t)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [poll])
+  }, [action, viaFilter, limit])
 
   const days = useMemo(() => {
     const out: { key: string; label: string; items: ActivityEntry[] }[] = []
@@ -167,7 +185,9 @@ export function ActivityPage() {
 }
 
 export function ActivityRow({ e, onOpen, compact }: { e: ActivityEntry; onOpen?: (assetId: string) => void; compact?: boolean }) {
-  const Icon = e.via === 'mcp' || e.via === 'api' ? Bot : User
+  const agent = e.via === 'mcp' || e.via === 'api'
+  const system = e.via === 'system'
+  const Icon = system ? Cog : agent ? Bot : User
   const clickable = !!e.asset_id && !e.asset_gone && !!onOpen
   const Fallback = typeIcon('other')
   return (
@@ -179,7 +199,7 @@ export function ActivityRow({ e, onOpen, compact }: { e: ActivityEntry; onOpen?:
       )}
       <div className="activity-body">
         <p className="activity-line">
-          <Icon className="activity-via" aria-label={e.via === 'mcp' || e.via === 'api' ? 'Agent' : 'Person'} />
+          <Icon className="activity-via" aria-label={system ? 'System' : agent ? 'Agent' : 'Person'} />
           <strong>{e.actor || 'hoard'}</strong> <span className="muted">{e.action}</span>
           {e.asset_id && !compact && (
             <>

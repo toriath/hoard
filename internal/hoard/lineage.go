@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
 const maxLineageDepth = 20
+
+var reToolName = regexp.MustCompile(`^[A-Za-z0-9 ._()-]{1,40}$`)
 
 // LineageNode is a compact view of an asset inside a lineage.
 type LineageNode struct {
@@ -180,7 +183,12 @@ func reproduceHint(r *Recipe) string {
 	tool, _ := r.Generator["tool"].(string)
 	var b strings.Builder
 	if tool != "" {
-		fmt.Fprintf(&b, "Call the generator tool %q with the inputs below. ", tool)
+		// The tool name is data written by someone else: only a plain name is quoted.
+		if reToolName.MatchString(tool) {
+			fmt.Fprintf(&b, "Call the generator tool %q with the inputs below. ", tool)
+		} else {
+			b.WriteString("Call the tool recorded in generator.tool with the inputs below. ")
+		}
 	} else {
 		b.WriteString("The generator tool is not recorded; use the one that fits the asset type. ")
 	}

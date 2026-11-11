@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"time"
 )
 
 // Activity is one entry of the change feed.
@@ -64,8 +65,12 @@ func (s *Service) ListActivity(ctx context.Context, q ActivityQuery) ([]Activity
 		args = append(args, q.AssetID)
 	}
 	if q.Since != "" {
+		t, err := time.Parse(time.RFC3339, q.Since)
+		if err != nil {
+			return nil, invalid("since must be an RFC 3339 time, e.g. 2026-01-31T12:00:00Z")
+		}
 		where = append(where, "at > ?")
-		args = append(args, q.Since)
+		args = append(args, t.UTC().Format(time.RFC3339))
 	}
 	if q.AfterSeq > 0 {
 		where = append(where, "seq > ?")

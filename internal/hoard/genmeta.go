@@ -57,8 +57,22 @@ type imported struct {
 	gen    map[string]any
 }
 
-// applyImported fills empty fields only: the prompt when it is empty, and
-// every generator key the asset does not have yet.
+const (
+	maxImportedPrompt   = 50000    // the prompt field's limit
+	maxImportedNegative = 4000     // negative prompts are cut shorter
+	maxGeneratorBytes   = 32 << 10 // the limit update_asset applies to the generator
+)
+
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
+}
+
+// applyImported fills empty fields only: the prompt when it is empty, and the
+// generator keys the asset does not have yet. A generator that already names a
+// tool is never touched, so keys of another tool are not mixed into it.
 func (s *Service) applyImported(ctx context.Context, assetID string, imp *imported) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		var prompt, genJSON string
@@ -71,13 +85,42 @@ func (s *Service) applyImported(ctx context.Context, assetID string, imp *import
 		}
 		changed := false
 		if strings.TrimSpace(prompt) == "" && imp.prompt != "" {
-			prompt, changed = imp.prompt, true
+			prompt, changed = truncateUTF8(imp.prompt, maxImportedPrompt), true
 		}
-		for k, v := range imp.gen {
-			if cur, ok := gen[k]; ok && !isEmptyValue(cur) {
-				continue
+		if tool, _ := gen["tool"].(string); strings.TrimSpace(tool) == "" {
+			merged := map[string]any{}
+			for k, v := range gen {
+				merged[k] = v
 			}
-			gen[k], changed = v, true
+			added := false
+			for k, v := range imp.gen {
+				if cur, ok := merged[k]; ok && !isEmptyValue(cur) {
+					continue
+				}
+				if str, ok := v.(string); ok && k == "negative_prompt" {
+					v = truncateUTF8(str, maxImportedNegative)
+				}
+				merged[k], added = v, true
+			}
+			if added {
+				b, err := json.Marshal(merged)
+				if err != nil {
+					return err
+				}
+				// Over the limit: drop the free-form settings first, then give up on the recipe.
+				for _, drop := range []string{"settings", "extra"} {
+					if len(b) <= maxGeneratorBytes {
+						break
+					}
+					delete(merged, drop)
+					if b, err = json.Marshal(merged); err != nil {
+						return err
+					}
+				}
+				if len(b) <= maxGeneratorBytes {
+					gen, changed = merged, true
+				}
+			}
 		}
 		if !changed {
 			return nil
@@ -112,8 +155,16 @@ func isEmptyValue(v any) bool {
 
 type textChunk struct{ keyword, text string }
 
-// readPNGText returns the text chunks (tEXt, zTXt, iTXt) of a PNG without
-// reading image data. At most genmetaMaxText bytes of chunk data are read.
+// wantedKeyword lists the text chunk keywords that are interpreted; all
+// other chunks are skipped without being read into memory.
+var wantedKeyword = map[string]bool{
+	"parameters": true, "prompt": true, "workflow": true,
+	"XML:com.adobe.xmp": true, "Comment": true, "Description": true,
+}
+
+// readPNGText returns the interesting text chunks (tEXt, zTXt, iTXt) of a PNG
+// without reading image data. One budget of genmetaMaxText bytes covers
+// everything retained for the whole file: raw chunk data and decompressed text.
 func readPNGText(r io.ReadSeeker) []textChunk {
 	sig := make([]byte, 8)
 	if _, err := io.ReadFull(r, sig); err != nil || string(sig) != "\x89PNG\r\n\x1a\n" {
@@ -121,7 +172,8 @@ func readPNGText(r io.ReadSeeker) []textChunk {
 	}
 	var out []textChunk
 	budget := int64(genmetaMaxText)
-	for i := 0; i < genmetaMaxChunks; i++ {
+	skip := func(n int64) bool { _, err := r.Seek(n, io.SeekCurrent); return err == nil }
+	for i := 0; i < genmetaMaxChunks && budget > 0; i++ {
 		var hdr [8]byte
 		if _, err := io.ReadFull(r, hdr[:]); err != nil {
 			break
@@ -132,33 +184,42 @@ func readPNGText(r io.ReadSeeker) []textChunk {
 			break
 		}
 		if typ != "tEXt" && typ != "zTXt" && typ != "iTXt" {
-			if _, err := r.Seek(n+4, io.SeekCurrent); err != nil {
+			if !skip(n + 4) {
 				break
 			}
 			continue
 		}
-		if n > budget {
-			if _, err := r.Seek(n+4, io.SeekCurrent); err != nil {
+		// Peek at the keyword before deciding whether the chunk is worth reading.
+		peekN := min(n, 82)
+		peek := make([]byte, peekN)
+		if _, err := io.ReadFull(r, peek); err != nil {
+			break
+		}
+		z := bytes.IndexByte(peek, 0)
+		if z <= 0 || !wantedKeyword[string(peek[:z])] || n > budget {
+			if !skip(n - peekN + 4) {
 				break
 			}
 			continue
 		}
 		budget -= n
 		data := make([]byte, n)
-		if _, err := io.ReadFull(r, data); err != nil {
+		copy(data, peek)
+		if _, err := io.ReadFull(r, data[peekN:]); err != nil {
 			break
 		}
-		if _, err := r.Seek(4, io.SeekCurrent); err != nil { // CRC
+		if !skip(4) { // CRC
 			break
 		}
-		if c, ok := parseTextChunk(typ, data); ok {
+		if c, ok := parseTextChunk(typ, data, &budget); ok {
 			out = append(out, c)
 		}
 	}
 	return out
 }
 
-func parseTextChunk(typ string, d []byte) (textChunk, bool) {
+// parseTextChunk decodes one chunk. Decompressed text is taken from budget.
+func parseTextChunk(typ string, d []byte, budget *int64) (textChunk, bool) {
 	z := bytes.IndexByte(d, 0)
 	if z <= 0 {
 		return textChunk{}, false
@@ -172,7 +233,7 @@ func parseTextChunk(typ string, d []byte) (textChunk, bool) {
 		if len(rest) < 1 {
 			return textChunk{}, false
 		}
-		text = inflate(rest[1:])
+		text = inflate(rest[1:], budget)
 	case "iTXt":
 		if len(rest) < 2 {
 			return textChunk{}, false
@@ -188,7 +249,7 @@ func parseTextChunk(typ string, d []byte) (textChunk, bool) {
 		}
 		text = rest
 		if compressed {
-			text = inflate(rest)
+			text = inflate(rest, budget)
 		}
 	}
 	if text == nil {
@@ -197,13 +258,18 @@ func parseTextChunk(typ string, d []byte) (textChunk, bool) {
 	return textChunk{keyword: key, text: strings.ToValidUTF8(string(text), "")}, true
 }
 
-func inflate(b []byte) []byte {
+// inflate decompresses at most *budget bytes and charges them to it.
+func inflate(b []byte, budget *int64) []byte {
+	if *budget <= 0 {
+		return nil
+	}
 	zr, err := zlib.NewReader(bytes.NewReader(b))
 	if err != nil {
 		return nil
 	}
 	defer zr.Close()
-	out, _ := io.ReadAll(io.LimitReader(zr, genmetaMaxText))
+	out, _ := io.ReadAll(io.LimitReader(zr, *budget))
+	*budget -= int64(len(out))
 	return out
 }
 
@@ -232,7 +298,7 @@ func importFromChunks(chunks []textChunk) *imported {
 			comfy = c.text
 		case c.keyword == "workflow" && strings.HasPrefix(strings.TrimSpace(c.text), "{"):
 			workflow = c.text
-		default:
+		case c.keyword == "XML:com.adobe.xmp" || c.keyword == "Comment" || c.keyword == "Description":
 			if drawThings == nil {
 				drawThings = parseDrawThings(c.text)
 			}
@@ -328,6 +394,9 @@ func numOrString(v string) any {
 	if i, err := strconv.ParseInt(v, 10, 64); err == nil {
 		return i
 	}
+	if u, err := strconv.ParseUint(v, 10, 64); err == nil { // seeds go up to 2^64-1
+		return u
+	}
 	if f, err := strconv.ParseFloat(v, 64); err == nil {
 		return f
 	}
@@ -336,6 +405,8 @@ func numOrString(v string) any {
 
 // parseComfy reads the ComfyUI "prompt" graph: only what is trivially
 // findable (first KSampler, its text encoders, checkpoint, latent size).
+// Numbers stay json.Number so large seeds are exact. Returns nil when nothing
+// useful was found.
 func parseComfy(promptJSON string, hasWorkflow bool) *imported {
 	imp := &imported{gen: map[string]any{"tool": "ComfyUI"}}
 	if hasWorkflow {
@@ -345,8 +416,13 @@ func parseComfy(promptJSON string, hasWorkflow bool) *imported {
 		Class  string         `json:"class_type"`
 		Inputs map[string]any `json:"inputs"`
 	}
-	if promptJSON == "" || json.Unmarshal([]byte(promptJSON), &graph) != nil {
-		return imp
+	dec := json.NewDecoder(strings.NewReader(promptJSON))
+	dec.UseNumber()
+	if promptJSON == "" || dec.Decode(&graph) != nil {
+		if hasWorkflow {
+			return imp
+		}
+		return nil
 	}
 	ids := make([]string, 0, len(graph))
 	for id := range graph {
@@ -358,15 +434,25 @@ func parseComfy(promptJSON string, hasWorkflow bool) *imported {
 		if !ok || len(ref) == 0 {
 			return ""
 		}
-		id, _ := ref[0].(string)
-		if id == "" {
-			if f, ok := ref[0].(float64); ok {
-				id = strconv.Itoa(int(f))
-			}
+		var id string
+		switch v := ref[0].(type) {
+		case string:
+			id = v
+		case json.Number:
+			id = v.String()
 		}
 		t, _ := graph[id].Inputs["text"].(string)
 		return t
 	}
+	intOf := func(v any) (int, bool) {
+		n, ok := v.(json.Number)
+		if !ok {
+			return 0, false
+		}
+		i, err := n.Int64()
+		return int(i), err == nil
+	}
+	found := false
 	for _, id := range ids {
 		n := graph[id]
 		switch {
@@ -378,6 +464,7 @@ func parseComfy(promptJSON string, hasWorkflow bool) *imported {
 				if v, ok := n.Inputs[k[0]]; ok {
 					if _, isLink := v.([]any); !isLink {
 						imp.gen[k[1]] = v
+						found = true
 					}
 				}
 			}
@@ -385,18 +472,23 @@ func parseComfy(promptJSON string, hasWorkflow bool) *imported {
 			if neg := textOf(n.Inputs["negative"]); neg != "" {
 				imp.gen["negative_prompt"] = neg
 			}
+			found = found || imp.prompt != ""
 		case n.Class == "CheckpointLoaderSimple" || n.Class == "CheckpointLoader":
 			if v, ok := n.Inputs["ckpt_name"].(string); ok {
 				imp.gen["model"] = v
+				found = true
 			}
 		case n.Class == "EmptyLatentImage":
-			if w, ok := n.Inputs["width"].(float64); ok {
-				imp.gen["width"] = int(w)
+			if w, ok := intOf(n.Inputs["width"]); ok {
+				imp.gen["width"] = w
 			}
-			if h, ok := n.Inputs["height"].(float64); ok {
-				imp.gen["height"] = int(h)
+			if h, ok := intOf(n.Inputs["height"]); ok {
+				imp.gen["height"] = h
 			}
 		}
+	}
+	if !found && !hasWorkflow {
+		return nil
 	}
 	return imp
 }

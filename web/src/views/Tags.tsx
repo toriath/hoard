@@ -10,15 +10,23 @@ import { Button, Check, Dialog, Empty, Field, Menu, Spinner, useConfirm } from '
 type Sort = 'count' | 'name'
 
 /** Same canonicalisation as the server (internal/hoard NormalizeTag), so the dialog can tell whether a name already exists. */
-const normalize = (t: string) =>
-  t
+const normalize = (t: string) => {
+  const clean = t
     .toLowerCase()
     .trim()
     .replace(/[^\p{L}\p{N}\-_.:+#]+/gu, '-')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 48)
-    .replace(/-+$/g, '')
+  // The server cuts at 48 bytes of UTF-8, not 48 characters.
+  let out = ''
+  let bytes = 0
+  for (const ch of clean) {
+    bytes += new TextEncoder().encode(ch).length
+    if (bytes > 48) break
+    out += ch
+  }
+  return out.replace(/-+$/g, '')
+}
 
 /** Tag management: list, rename, merge, delete. */
 export function TagsPage() {
@@ -143,6 +151,10 @@ export function TagsPage() {
           mode="rename"
           from={[renaming]}
           counts={counts}
+          onChanged={() => {
+            changed('assets')
+            q.reload()
+          }}
           onClose={() => setRenaming(null)}
           onDone={(m) => {
             setRenaming(null)
@@ -156,6 +168,10 @@ export function TagsPage() {
           mode="merge"
           from={chosen.sort((a, b) => b.count - a.count).map((t) => t.tag)}
           counts={counts}
+          onChanged={() => {
+            changed('assets')
+            q.reload()
+          }}
           onClose={() => setMerging(false)}
           onDone={(m) => {
             setMerging(false)
@@ -170,13 +186,14 @@ export function TagsPage() {
 
 /** Rename one tag, or merge several into one target. Asks for confirmation when the target already exists. */
 function TagDialog({
-  mode, from, counts, onClose, onDone,
+  mode, from, counts, onClose, onDone, onChanged,
 }: {
   mode: 'rename' | 'merge'
   from: string[]
   counts: Map<string, number>
   onClose: () => void
   onDone: (message: string) => void
+  onChanged: () => void
 }) {
   const [target, setTarget] = useState(from[0] ?? '')
   const [busy, setBusy] = useState(false)
@@ -204,6 +221,7 @@ function TagDialog({
       toastError(e)
     } finally {
       setBusy(false)
+      onChanged() // also after a partial failure, so the list shows what really happened
     }
   }
 

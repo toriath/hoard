@@ -11,6 +11,11 @@ export function HistoryPanel({ asset }: AssetPanelProps) {
   const [items, setItems] = useState<ActivityEntry[] | null>(null)
   const [failed, setFailed] = useState(false)
 
+  useEffect(() => {
+    setItems(null)
+    setFailed(false)
+  }, [asset.id])
+
   // Loaded when opened, and again when the asset changed while it is open.
   useEffect(() => {
     if (!open) return
