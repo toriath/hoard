@@ -1,7 +1,8 @@
 package server
 
 // routesHistory registers the REST endpoints of one feature area. api requires a
-// signed-in user or an API token.
-func (s *Server) routesHistory(api route) {
-	_ = api
+// signed-in user or an API token; pub is only for signed, expiring links
+// (verify the signature in the handler).
+func (s *Server) routesHistory(api, pub route) {
+	_, _ = api, pub
 }

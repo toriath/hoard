@@ -106,11 +106,13 @@ func New(svc *hoard.Service, agent *ai.Agent, cfg config.Config, log *slog.Logge
 	session("POST /api/v1/settings/ai/models", s.handleAIModels)
 
 	// Feature areas live in their own files; each registers its routes here.
-	s.routesBrief(api)         // routes_brief.go
-	s.routesWork(api)          // routes_work.go
-	s.routesDelivery(api, pub) // routes_delivery.go (pub: signed links only)
-	s.routesLibrary(api)       // routes_library.go
-	s.routesHistory(api)       // routes_history.go
+	// api requires a signed-in user or an API token; pub is only for signed,
+	// expiring links, whose handlers verify the signature themselves.
+	s.routesBrief(api, pub) // routes_brief.go
+	s.routesWork(api, pub)  // routes_work.go
+	s.routesDelivery(api, pub)
+	s.routesLibrary(api, pub) // routes_library.go
+	s.routesHistory(api, pub) // routes_history.go
 
 	// Signed, expiring links handed out to agents (no session or token needed).
 	pub("GET /api/v1/dl/{id}/{filename}", s.handleSignedDownload)

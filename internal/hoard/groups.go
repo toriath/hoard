@@ -3,6 +3,7 @@ package hoard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -464,4 +465,18 @@ func (s *Service) GetStats(ctx context.Context) (*Stats, error) {
 		return st, nil
 	}
 	return st, rows.Err()
+}
+
+// ProjectBriefJSON returns the stored brief of a project as raw JSON ({} when
+// none was saved). The brief's schema is documented with ProjectBrief.
+func (s *Service) ProjectBriefJSON(ctx context.Context, projectID string) (json.RawMessage, error) {
+	var b string
+	err := s.db.QueryRowContext(ctx, `SELECT brief FROM projects WHERE id = ?`, projectID).Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("project %q: %w", projectID, ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
 }
