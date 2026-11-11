@@ -280,6 +280,8 @@ func (s *Server) handleSignedUpload(w http.ResponseWriter, r *http.Request) erro
 	if !s.svc.Verify("upload:"+id+":"+hoard.SanitizeFilename(filename), q.Get("exp"), q.Get("sig")) {
 		return &apiError{http.StatusForbidden, "forbidden", "upload link is invalid or has expired; request a new one"}
 	}
+	// The link carries no identity; the activity feed says where the change came from.
+	r = r.WithContext(hoard.WithActor(r.Context(), signedLinkActor))
 	return s.putFile(w, r, id, filename)
 }
 

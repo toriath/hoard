@@ -43,7 +43,7 @@ func (s *Server) handleRepoSnapshot(w http.ResponseWriter, r *http.Request) erro
 	_ = rc.SetReadDeadline(time.Now().Add(time.Minute))
 	defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
 	r.Body = http.MaxBytesReader(w, r.Body, 9<<20)
-	ctx := hoard.WithActor(r.Context(), hoard.Actor{Username: "signed link", Via: "api"})
+	ctx := hoard.WithActor(r.Context(), signedLinkActor)
 	res, err := s.svc.ReplaceRepoSnapshot(ctx, id, r.Body)
 	if err != nil {
 		return err
@@ -199,3 +199,7 @@ func (s *Server) handleEngineHints(w http.ResponseWriter, r *http.Request) error
 	writeJSON(w, http.StatusOK, res)
 	return nil
 }
+
+// signedLinkActor attributes changes made through signed links, which carry
+// no user identity.
+var signedLinkActor = hoard.Actor{Username: "signed link", Via: "api"}

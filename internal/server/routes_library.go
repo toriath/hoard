@@ -125,6 +125,7 @@ func (s *Server) handleSignedImport(w http.ResponseWriter, r *http.Request) erro
 	if !importLinks.use(q.Get("sig"), exp) {
 		return &apiError{http.StatusConflict, "conflict", "this import link was already used; request a new one"}
 	}
+	r = r.WithContext(hoard.WithActor(r.Context(), signedLinkActor))
 	return s.importArchive(w, r, r.Body, hoard.SanitizeFilename(filename), opts)
 }
 

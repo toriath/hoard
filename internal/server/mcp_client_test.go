@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -67,6 +68,34 @@ func TestMCPWithSDKClient(t *testing.T) {
 	feed, err := e.svc.ListActivity(ctx, hoard.ActivityQuery{Action: "asset.create", Limit: 1})
 	if err != nil || len(feed) != 1 || feed[0].Via != "mcp" || feed[0].Actor != "alice via MCP (test)" {
 		t.Errorf("activity actor = %+v %v", feed, err)
+	}
+	// A file uploaded over a signed link is attributed to the link, not to the system.
+	var made struct {
+		Asset struct {
+			ID string `json:"id"`
+		} `json:"asset"`
+		Upload struct {
+			Commands []struct {
+				Command string `json:"command"`
+			} `json:"commands"`
+		} `json:"upload"`
+	}
+	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "create_asset", Arguments: map[string]any{"name": "via link", "filenames": []string{"a.txt"}}})
+	if err != nil || res.IsError {
+		t.Fatalf("create_asset with file: %v %+v", err, res)
+	}
+	if err := json.Unmarshal([]byte(res.Content[0].(*mcp.TextContent).Text), &made); err != nil || len(made.Upload.Commands) != 1 {
+		t.Fatalf("upload commands: %v %+v", err, made)
+	}
+	link := made.Upload.Commands[0].Command
+	link = link[strings.LastIndex(link, " '")+2 : len(link)-1]
+	req, _ := http.NewRequest("PUT", link, strings.NewReader("hello"))
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusCreated {
+		t.Fatalf("signed upload: %v %v", err, resp)
+	}
+	feed, err = e.svc.ListActivity(ctx, hoard.ActivityQuery{AssetID: made.Asset.ID, Action: "asset.file"})
+	if err != nil || len(feed) != 1 || feed[0].Actor != "signed link via API" {
+		t.Errorf("signed upload actor = %+v %v", feed, err)
 	}
 	// Schema validation happens before the handler: a wrong argument type is a readable tool error.
 	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "search_assets", Arguments: map[string]any{"limit": "many"}})
