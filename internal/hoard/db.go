@@ -54,6 +54,7 @@ type Service struct {
 
 	thumbSem chan struct{}  // one image is decoded at a time
 	assetMu  [64]sync.Mutex // serialises sidecar writes per asset (striped)
+	mutateMu [64]sync.Mutex // serialises mutations of one asset (striped); always taken before assetMu
 	tokenMu  sync.Mutex
 	tokenUse map[string]time.Time // throttles last_used_at writes
 

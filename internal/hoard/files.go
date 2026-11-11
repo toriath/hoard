@@ -101,6 +101,16 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 	// the index cannot drift apart.
 	ctx = context.WithoutCancel(ctx)
 
+	// Only the bookkeeping is serialised per asset, not the upload above. The
+	// asset is read again under the lock: another change may have landed.
+	defer s.lockAssets(assetID)()
+	if a, err = s.GetAsset(ctx, assetID); err != nil {
+		return nil, err
+	}
+	if a.DeletedAt != nil {
+		return nil, invalid("asset %s is in the trash; restore it before adding files", assetID)
+	}
+
 	f := File{
 		ID: newID("fil"), Filename: filename, Mime: MimeFor(filename), Size: size, SHA256: sum,
 		Kind: PreviewKind(filename), CreatedAt: now(),
@@ -226,6 +236,7 @@ func refreshAggregates(ctx context.Context, tx *sql.Tx, assetID string) error {
 
 // DeleteFile removes one file from an asset.
 func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error {
+	defer s.lockAssets(assetID)()
 	var filename string
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, `SELECT filename FROM asset_files WHERE id = ? AND asset_id = ?`, fileID, assetID).Scan(&filename)
@@ -262,6 +273,7 @@ func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error 
 
 // SetPrimaryFile selects which file drives preview and thumbnail.
 func (s *Service) SetPrimaryFile(ctx context.Context, assetID, fileID string) error {
+	defer s.lockAssets(assetID)()
 	var filename string
 	err := s.db.QueryRowContext(ctx, `SELECT filename FROM asset_files WHERE id = ? AND asset_id = ?`, fileID, assetID).Scan(&filename)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -338,6 +350,7 @@ func (s *Service) SetThumbnail(ctx context.Context, assetID string, data []byte)
 	if !ValidAssetID(assetID) {
 		return fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
 	}
+	defer s.lockAssets(assetID)()
 	var one int
 	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM assets WHERE id = ?`, assetID).Scan(&one); err != nil {
 		return fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
@@ -354,6 +367,7 @@ func (s *Service) DeleteThumbnail(ctx context.Context, assetID string) error {
 	if !ValidAssetID(assetID) {
 		return fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
 	}
+	defer s.lockAssets(assetID)()
 	_ = os.Remove(filepath.Join(s.assetDir(assetID), "thumb.png"))
 	_ = os.Remove(filepath.Join(s.assetDir(assetID), "thumb.jpg"))
 	_, err := s.db.ExecContext(ctx, `UPDATE assets SET thumb_version = 0 WHERE id = ?`, assetID)

@@ -61,7 +61,6 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - Links handed to agents are built from the request's `Host` (`Server.BaseURL`), which is not validated. A proxy that rewrites `Host` produces wrong links; `HOARD_PUBLIC_URL` overrides it globally.
 - Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket, unless `HOARD_TRUSTED_PROXIES` lists the proxy: then it keys on the right-most `X-Forwarded-For` address that is not a trusted proxy (`Server.clientIP`). `X-Forwarded-For` from any other peer is ignored. Only the throttle uses it; `Server.BaseURL` still uses `Host`.
 - Revoking an API token does not revoke signed links it was already given (two hours at most). The link-signing key cannot be rotated without editing the database.
-- Mutations of one asset are not serialised beyond the sidecar write. Two concurrent edits are both applied; the sidecar reflects the later one.
 - Uploading a folder flattens it: relative paths are not kept, so files with the same name in one asset replace each other.
 - Rendering a preview in the browser also updates technical attributes, which bumps the asset's "changed" time.
 - The `show_assets` gallery plays only audio files up to 2 MiB and shows thumbnails only; video, 3D and larger audio need the web UI. It is stateless: reopening a conversation starts with nothing ticked.
@@ -71,6 +70,7 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 ## Conventions
 
 - Schema changes: append a migration to `migrations` in `internal/hoard/db.go`; never edit an applied one.
+- Mutations of one asset are serialised by `lockAssets` (a striped mutex set, taken before `syncSidecar`'s own `assetLock`; never the other way round, never while streaming an upload). New code that reads an asset and then writes it back must take it.
 - Every asset mutation must keep three things in sync: the DB row, the FTS row (`reindex`) and the `asset.json` sidecar (`syncSidecar`).
 - New UI colours, sizes and controls go into `web/src/styles/tokens.css` / `components.css` first and show up on the `/design` page.
 - Dialogs, menus and form fields come from `web/src/ui`; they handle focus, Escape and labelling. Do not wrap several controls in one `<label>`.
