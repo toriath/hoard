@@ -308,7 +308,7 @@ CREATE TABLE project_files (
 CREATE INDEX project_files_sha ON project_files(sha256);
 
 CREATE TABLE activity (
-	seq      INTEGER PRIMARY KEY,
+	seq      INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused, even after pruning: clients poll with after_seq
 	at       TEXT NOT NULL,
 	actor    TEXT NOT NULL DEFAULT '',  -- display form, e.g. "toriath via MCP (claude-code)"
 	user_id  TEXT NOT NULL DEFAULT '',
