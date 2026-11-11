@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
@@ -54,8 +55,13 @@ type Service struct {
 
 	thumbSem chan struct{}  // one image is decoded at a time
 	assetMu  [64]sync.Mutex // serialises sidecar writes per asset (striped)
+	mutateMu [64]sync.Mutex // serialises mutations of one asset (striped); always taken before assetMu
 	tokenMu  sync.Mutex
 	tokenUse map[string]time.Time // throttles last_used_at writes
+
+	rebuildCancel context.CancelFunc // set while a startup import of the sidecars runs
+	rebuildDone   chan struct{}
+	rebuilding    atomic.Bool
 }
 
 // Open opens (and if necessary creates) the library in dataDir.
@@ -96,6 +102,7 @@ func Open(dataDir string, log *slog.Logger) (*Service, error) {
 		return nil, err
 	}
 	s.protectDB()
+	s.startRebuild()
 	return s, nil
 }
 
@@ -111,7 +118,13 @@ func (s *Service) protectDB() {
 }
 
 // Close releases the database.
-func (s *Service) Close() error { return s.db.Close() }
+func (s *Service) Close() error {
+	if s.rebuildDone != nil {
+		s.rebuildCancel()
+		<-s.rebuildDone
+	}
+	return s.db.Close()
+}
 
 // DataDir returns the library root.
 func (s *Service) DataDir() string { return s.dataDir }

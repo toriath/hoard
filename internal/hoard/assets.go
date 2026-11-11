@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -489,6 +490,7 @@ func patchSummary(in AssetInput) string {
 
 // UpdateAsset applies a partial update.
 func (s *Service) UpdateAsset(ctx context.Context, id string, in AssetInput) (*Asset, error) {
+	defer s.lockAssets(id)()
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		if err := assetExists(ctx, tx, id); err != nil {
 			return err
@@ -738,6 +740,9 @@ func (s *Service) Bulk(ctx context.Context, op BulkOp) (int, error) {
 	if op.Patch.Name != nil {
 		return 0, invalid("name cannot be set in bulk")
 	}
+	// The locks cover the atomic database change only. Sidecars and removed
+	// directories follow after they are released (syncSidecar has its own lock).
+	unlock := s.lockAssets(op.IDs...)
 	ts := now()
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		for _, id := range op.IDs {
@@ -775,6 +780,7 @@ func (s *Service) Bulk(ctx context.Context, op BulkOp) (int, error) {
 		}
 		return nil
 	})
+	unlock()
 	if err != nil {
 		return 0, err
 	}
@@ -916,6 +922,35 @@ func (s *Service) assetLock(id string) *sync.Mutex {
 	h := fnv.New32a()
 	h.Write([]byte(id))
 	return &s.assetMu[h.Sum32()%uint32(len(s.assetMu))]
+}
+
+// lockAssets serialises mutations of the given assets: a change reads the
+// current state, writes the index and the sidecar, and no other change to the
+// same asset runs in between. The returned function releases the locks.
+// Stripes are taken in ascending order, so callers locking several assets
+// cannot deadlock each other. It is a different set of mutexes than
+// assetLock, which syncSidecar takes inside; never call lockAssets while
+// holding assetLock. Do not hold it while streaming an upload.
+func (s *Service) lockAssets(ids ...string) (unlock func()) {
+	var once sync.Once
+	var stripes []int
+	for _, id := range ids {
+		h := fnv.New32a()
+		h.Write([]byte(id))
+		stripes = append(stripes, int(h.Sum32()%uint32(len(s.mutateMu))))
+	}
+	slices.Sort(stripes)
+	stripes = slices.Compact(stripes)
+	for _, i := range stripes {
+		s.mutateMu[i].Lock()
+	}
+	return func() {
+		once.Do(func() {
+			for _, i := range slices.Backward(stripes) {
+				s.mutateMu[i].Unlock()
+			}
+		})
+	}
 }
 
 // TypeIsAuto reports whether the type is still the automatic guess.

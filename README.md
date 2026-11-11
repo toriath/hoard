@@ -8,7 +8,7 @@
 A self-hosted database for game assets: sprites, 3D models, textures, SFX, music, VFX, shaders, video, fonts and whatever else a game needs. One small container, one data directory, a web UI for people and an MCP server for Claude.
 
 - **AI first.** Every feature is available to Claude Code and Claude Desktop over MCP with an API token: search, download into a project, store newly generated assets with their prompts, tag, group, track usage.
-- **For humans too.** A fast web UI for desktop and phone with previews for every media kind, search, sorting, bulk actions and downloads.
+- **For humans too.** A fast web UI for desktop and phone with previews for every media kind (sprite sheets play as animations once their frame size is set under *Edit → Animation*), search, sorting, bulk actions and downloads.
 - **Your data, readable.** Original files are stored untouched next to a JSON sidecar per asset. No lock-in, trivial backups.
 - **Built-in AI agent** that names, describes and tags assets, using the Claude API or a local model in LM Studio.
 
@@ -235,7 +235,7 @@ Everything is below the `/data` volume:
 └── tmp/                     uploads in flight
 ```
 
-A ZFS snapshot of the dataset is a complete backup. The sidecars are a safety net and a way to use the library without hoard: if the index were lost, every asset would still be there with its metadata, but hoard does not rebuild the index from them, and accounts, tokens and settings live only in the index.
+A ZFS snapshot of the dataset is a complete backup. The sidecars are a safety net and a way to use the library without hoard: if the index were lost, every asset would still be there with its metadata. If `hoard.db` is missing (or holds no assets) while `assets/*/asset.json` files exist, hoard imports them in the background at startup: assets with their ids, times, status, lineage, generator, attributes and tags, the files that are really on disk (size and SHA-256 are recomputed from the file, not taken from the sidecar), and the collections and projects they name. Asset requests, notes, the activity feed, the project brief and repository snapshots are not in the sidecars and are not restored. Accounts, API tokens and settings live only in the index, so after a rebuild you set up the first account again and create new tokens. Sidecars that cannot be read are skipped with a warning in the log, and symbolic links are never followed (not for an asset folder, its `files` folder, a file or a thumbnail). Recorded times are clamped to a sane range and text fields are cut to the usual limits. The import runs in the background; the library shows a note while it runs, and if hoard restarts in the middle it continues at the next start.
 
 ## Configuration
 
@@ -249,6 +249,7 @@ All optional. Set as environment variables on the container.
 | `HOARD_TRASH_DAYS` | `30` | Empty the trash after this many days (`0` keeps it forever) |
 | `HOARD_BACKUP_KEEP` | `7` | Daily index snapshots to keep (`0` disables) |
 | `HOARD_PUBLIC_URL` | – | Force one base URL in links handed to agents. Normally not needed |
+| `HOARD_TRUSTED_PROXIES` | – | Comma-separated IPs and CIDRs of reverse proxies in front of hoard (e.g. `172.18.0.0/16`). Requests from them are throttled per client address taken from `X-Forwarded-For` (the right-most address that is not a trusted proxy) instead of all sharing the proxy's address. Leave empty when clients connect directly: the header is then ignored |
 | `HOARD_ADMIN_USER`, `HOARD_ADMIN_PASSWORD` | – | Create the first account at startup instead of in the browser |
 | `HOARD_AI_PROVIDER`, `HOARD_AI_BASE_URL`, `HOARD_AI_MODEL`, `HOARD_AI_API_KEY` | – | Defaults for the AI agent (`anthropic` or `openai`). Settings saved in the UI win |
 | `HOARD_LOG_LEVEL` | `info` | `debug` for more detail |

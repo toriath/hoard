@@ -5,7 +5,7 @@ Self-hosted game-asset database: Go server (SQLite, REST, MCP) with an embedded 
 ## Commands
 
 - `make build`: web UI, then the single `./hoard` binary with the UI embedded
-- `make test`: `go vet`, `go test -race ./...` and `scripts/next-version_test.sh`
+- `make test`: `go vet`, `go test -race ./...`, `npm --prefix web test` (vitest) and `scripts/next-version_test.sh`
 - `npm --prefix web run typecheck`: TypeScript check; `npm --prefix web run build` also bundles
 - `make image`: container image; `make notices`: third-party licence notices
 
@@ -17,7 +17,7 @@ Self-hosted game-asset database: Go server (SQLite, REST, MCP) with an embedded 
 - `internal/server`: HTTP routing, sessions, file delivery. `server.go` holds middleware and auth, `assets.go` the handlers.
 - `internal/mcpserver`: `mcpserver.go` holds the tools; tool descriptions are the product for agents, so keep them accurate when behaviour changes. `gallery.go` and `gallery.html` are the interactive gallery behind `show_assets` (an MCP App): one hand-written HTML file without a build step, embedded into the binary and speaking JSON-RPC over `postMessage` with the client.
 - `internal/ai`: the metadata agent. `providers.go` talks to the Claude API (official Go SDK) and OpenAI-compatible servers (LM Studio).
-- `web/src`: `ui/` is the design system (use these primitives, do not restyle ad hoc), `views/` the pages, `preview/` and `lib/thumbs.ts` the media previews. The bundle is emitted to `dist/static`, because `/assets/<id>` is a page of the app.
+- `web/src`: `ui/` is the design system (use these primitives, do not restyle ad hoc), `views/` the pages, `preview/` and `lib/thumbs.ts` the media previews (`preview/SpritePreview.tsx` plays sprite sheets from the `frame_width`/`frame_height`/`frames`/`columns`/`fps`/`loop`/`animations` attributes, parsed by `lib/sprite.ts`). The bundle is emitted to `dist/static`, because `/assets/<id>` is a page of the app.
 - `scripts/`: `next-version.sh` (version from Conventional Commits) with its tests, `build-release.sh`, `third-party-notices.sh`.
 
 ## Release flow
@@ -53,7 +53,7 @@ Covered by tests or checked in a real deployment: the web UI, MCP from a real cl
 
 Generator metadata import (`internal/hoard/genmeta.go`) is tested with synthetic PNGs and sidecars written from the documented formats, not with files from the real tools. The Automatic1111 `parameters` layout and the ComfyUI `prompt` graph are well known; the Draw Things reader is a tolerant guess (a JSON object with `c`, `uc`, `seed`, `steps`, `scale`, `sampler`, `model`, `size`, as a whole text chunk or inside the XMP `exif:UserComment`) and the audio-studio sidecar reader assumes `prompt`, `seed` and optionally `settings`, `audio_type`, `duration`. Treat all of these as unverified until checked against real files.
 
-Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Do not describe these as working.
+Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Also checked only in jsdom (component tests), never in a real browser or on a phone: the animated sprite-sheet preview, the "More" menu of the phone navigation, the keyboard-operable waveform and the skip link. The index rebuild from sidecars is tested with a generated library, not with a real deployment. Do not describe these as working.
 
 ## Known gaps
 
@@ -62,21 +62,22 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - No password reset. An account is only created through first-run setup, `HOARD_ADMIN_*` (when no user exists) or another signed-in user. Until the first account exists, anyone who can reach the port can create it.
 - Thumbnails for audio, video, fonts, 3D models and image formats the server cannot decode are rendered by the browser (`web/src/lib/thumbs.ts`). Assets added only over MCP have none until the library is opened once, and the AI agent has no image for them before that.
 - Links handed to agents are built from the request's `Host` (`Server.BaseURL`), which is not validated. A proxy that rewrites `Host` produces wrong links; `HOARD_PUBLIC_URL` overrides it globally.
-- Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket. There is no trusted-proxy setting.
+- A rebuilt index (database lost, sidecars intact) has no users, tokens, settings, notes, requests, activity or project briefs; until the first account exists again anyone who can reach the port can create it.
+- Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket, unless `HOARD_TRUSTED_PROXIES` lists the proxy: then it keys on the right-most `X-Forwarded-For` address that is not a trusted proxy (`Server.clientIP`); IPv6 addresses count as their /64. `X-Forwarded-For` from any other peer is ignored. Only the throttle uses it; `Server.BaseURL` still uses `Host`.
 - Revoking an API token does not revoke signed links it was already given (two hours at most). The link-signing key cannot be rotated without editing the database.
-- Mutations of one asset are not serialised beyond the sidecar write. Two concurrent edits are both applied; the sidecar reflects the later one.
 - Uploading a folder flattens it: relative paths are not kept, so files with the same name in one asset replace each other.
-- Rendering a preview in the browser also updates technical attributes, which bumps the asset's "changed" time.
 - The `show_assets` gallery plays only audio files up to 2 MiB and shows thumbnails only; video, 3D and larger audio need the web UI. It is stateless: reopening a conversation starts with nothing ticked.
-- The waveform cannot be scrubbed from the keyboard. There is no frontend test suite.
 - The image job has registry write permission also on pull requests from branches of this repository (forks and Dependabot get a read-only token).
 
 ## Conventions
 
 - Schema changes: append a migration to `migrations` in `internal/hoard/db.go`; never edit an applied one.
+- Mutations of one asset are serialised by `lockAssets` (a striped mutex set, taken before `syncSidecar`'s own `assetLock`; never the other way round, never while streaming an upload). New code that reads an asset and then writes it back must take it.
+- Attributes the browser measures while rendering a preview (duration, sample rate, channels, size, triangles) go through `PUT /assets/{id}/technical` (`SetTechnicalAttrs`): an allow-list of numeric keys, no `updated_at` bump, no activity entry. Do not send them through `PATCH`.
 - Every asset mutation must keep three things in sync: the DB row, the FTS row (`reindex`) and the `asset.json` sidecar (`syncSidecar`).
 - New UI colours, sizes and controls go into `web/src/styles/tokens.css` / `components.css` first and show up on the `/design` page.
 - Dialogs, menus and form fields come from `web/src/ui`; they handle focus, Escape and labelling. Do not wrap several controls in one `<label>`.
+- Frontend tests (vitest + jsdom + Testing Library, `*.test.ts(x)` beside the code, setup in `web/src/test-setup.ts`) cover `lib/`, `views/filters.ts` and the `ui/` primitives (Dialog focus trap, Menu keyboard, Field labelling, TagInput). jsdom has no layout, so tests of components that measure must stub it. There are no tests of whole views or of the media previews.
 - Tests exercise behaviour through the Service and real HTTP (`httptest`), including an MCP client from the official SDK. A security fix comes with a test that fails without it. Run `make test` before finishing.
 - A new way to connect a client (like the Claude Code, Claude Desktop and ToolHive snippets) goes into both the Connect tab in `web/src/views/Settings.tsx` and the README's "Connect Claude" section.
 - User-facing docs live in `README.md`, `docs/api.md` (REST reference) and `docs/truenas.md`. Update them in the same change as the behaviour.

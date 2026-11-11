@@ -8,6 +8,7 @@ import { ConfirmProvider, Spinner, Toasts, cx, typeColor } from './ui'
 import { ActivityPage } from './views/Activity'
 import { AssetDrawer } from './views/AssetDetail'
 import { AuthScreen, Logo } from './views/Auth'
+import { BottomNav } from './views/BottomNav'
 import { DesignSystem } from './views/DesignSystem'
 import { currentAssetId, openAsset } from './views/filters'
 import { GroupDetail, GroupList } from './views/Groups'
@@ -106,6 +107,16 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
 
   return (
     <div className={cx('app', assetId && 'with-drawer')}>
+      <a
+        className="skip-link"
+        href="#main"
+        onClick={(e) => {
+          e.preventDefault()
+          document.getElementById('main')?.focus()
+        }}
+      >
+        Skip to content
+      </a>
       <nav className="sidebar" aria-label="Main">
         <a className="brand" {...link('/')}>
           <Logo />
@@ -140,7 +151,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
         </div>
       </nav>
 
-      <main className="main" id="main">
+      <main className="main" id="main" tabIndex={-1}>
         {page}
       </main>
 
@@ -151,14 +162,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
         </>
       )}
 
-      <nav className="bottomnav" aria-label="Main">
-        {NAV.map((n) => (
-          <a key={n.to} aria-current={n.match(loc.path) ? 'page' : undefined} {...link(n.to)}>
-            <n.icon aria-hidden />
-            <span>{n.label}</span>
-          </a>
-        ))}
-      </nav>
+      <BottomNav items={NAV} path={loc.path} />
 
       <datalist id="license-list">
         {meta.licenses.map((l) => (

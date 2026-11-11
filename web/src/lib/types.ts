@@ -127,6 +127,8 @@ export interface Stats {
   tags: number
   collections: number
   projects: number
+  /** The index is being rebuilt from the asset sidecars in the background. */
+  rebuilding?: boolean
 }
 
 export interface AssetType {

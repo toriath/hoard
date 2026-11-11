@@ -103,6 +103,8 @@ export const api = {
   deleteFile: (id: string, fileId: string) => request<Asset>('DELETE', `/assets/${seg(id)}/files/${seg(fileId)}`),
   setPrimary: (id: string, fileId: string) => post<Asset>(`/assets/${seg(id)}/files/${seg(fileId)}/primary`),
   putThumbnail: (id: string, blob: Blob) => request<Asset>('PUT', `/assets/${seg(id)}/thumbnail`, blob),
+  /** Measured file properties (duration, size…): stored without counting as an edit. */
+  putTechnical: (id: string, attrs: Record<string, unknown>) => request<Asset>('PUT', `/assets/${seg(id)}/technical`, { attrs }),
 
   // groups
   collections: () => get<{ items: Collection[] }>('/collections').then((r) => r.items),
