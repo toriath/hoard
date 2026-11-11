@@ -5,7 +5,7 @@ Self-hosted game-asset database: Go server (SQLite, REST, MCP) with an embedded 
 ## Commands
 
 - `make build`: web UI, then the single `./hoard` binary with the UI embedded
-- `make test`: `go vet`, `go test -race ./...` and `scripts/next-version_test.sh`
+- `make test`: `go vet`, `go test -race ./...`, `npm --prefix web test` (vitest) and `scripts/next-version_test.sh`
 - `npm --prefix web run typecheck`: TypeScript check; `npm --prefix web run build` also bundles
 - `make image`: container image; `make notices`: third-party licence notices
 
@@ -63,7 +63,7 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - Revoking an API token does not revoke signed links it was already given (two hours at most). The link-signing key cannot be rotated without editing the database.
 - Uploading a folder flattens it: relative paths are not kept, so files with the same name in one asset replace each other.
 - The `show_assets` gallery plays only audio files up to 2 MiB and shows thumbnails only; video, 3D and larger audio need the web UI. It is stateless: reopening a conversation starts with nothing ticked.
-- The waveform cannot be scrubbed from the keyboard. There is no frontend test suite.
+- The waveform cannot be scrubbed from the keyboard.
 - The image job has registry write permission also on pull requests from branches of this repository (forks and Dependabot get a read-only token).
 
 ## Conventions
@@ -74,6 +74,7 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - Every asset mutation must keep three things in sync: the DB row, the FTS row (`reindex`) and the `asset.json` sidecar (`syncSidecar`).
 - New UI colours, sizes and controls go into `web/src/styles/tokens.css` / `components.css` first and show up on the `/design` page.
 - Dialogs, menus and form fields come from `web/src/ui`; they handle focus, Escape and labelling. Do not wrap several controls in one `<label>`.
+- Frontend tests (vitest + jsdom + Testing Library, `*.test.ts(x)` beside the code, setup in `web/src/test-setup.ts`) cover `lib/`, `views/filters.ts` and the `ui/` primitives (Dialog focus trap, Menu keyboard, Field labelling, TagInput). jsdom has no layout, so tests of components that measure must stub it. There are no tests of whole views or of the media previews.
 - Tests exercise behaviour through the Service and real HTTP (`httptest`), including an MCP client from the official SDK. A security fix comes with a test that fails without it. Run `make test` before finishing.
 - A new way to connect a client (like the Claude Code, Claude Desktop and ToolHive snippets) goes into both the Connect tab in `web/src/views/Settings.tsx` and the README's "Connect Claude" section.
 - User-facing docs live in `README.md`, `docs/api.md` (REST reference) and `docs/truenas.md`. Update them in the same change as the behaviour.

@@ -57,6 +57,9 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Test web UI
+        working-directory: web
+        run: npm test
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

@@ -8,9 +8,10 @@ build: web ## build the single binary (web UI embedded)
 web: ## build the web UI into web/dist
 	cd web && npm ci && npm run build
 
-test: ## vet and test the server and the release version logic
+test: ## vet and test the server, the web UI and the release version logic
 	go vet ./...
 	go test -race ./...
+	npm --prefix web test
 	scripts/next-version_test.sh
 
 fmt:
