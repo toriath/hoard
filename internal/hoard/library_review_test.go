@@ -347,7 +347,7 @@ func TestDetectLicense(t *testing.T) {
 		"Licensed under the Apache License, Version 2.0":                                          "Apache-2.0",
 		"All rights reserved.":                                                                    "",
 		// two different licences: unknown
-		"Code: MIT License. Art: CC BY 4.0":                                "",
+		"Code: MIT License. Art: CC BY 4.0":                        "",
 		"CC0 1.0 Universal, also available as CC BY 4.0":           "",
 		"CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)": "CC-BY-4.0",
 		"CC BY (https://creativecommons.org/licenses/by/4.0/)":     "CC-BY-4.0",
