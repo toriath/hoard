@@ -201,6 +201,7 @@ All optional. Set as environment variables on the container.
 | `HOARD_TRASH_DAYS` | `30` | Empty the trash after this many days (`0` keeps it forever) |
 | `HOARD_BACKUP_KEEP` | `7` | Daily index snapshots to keep (`0` disables) |
 | `HOARD_PUBLIC_URL` | – | Force one base URL in links handed to agents. Normally not needed |
+| `HOARD_TRUSTED_PROXIES` | – | Comma-separated IPs and CIDRs of reverse proxies in front of hoard (e.g. `172.18.0.0/16`). Requests from them are throttled per client address taken from `X-Forwarded-For` (the right-most address that is not a trusted proxy) instead of all sharing the proxy's address. Leave empty when clients connect directly: the header is then ignored |
 | `HOARD_ADMIN_USER`, `HOARD_ADMIN_PASSWORD` | – | Create the first account at startup instead of in the browser |
 | `HOARD_AI_PROVIDER`, `HOARD_AI_BASE_URL`, `HOARD_AI_MODEL`, `HOARD_AI_API_KEY` | – | Defaults for the AI agent (`anthropic` or `openai`). Settings saved in the UI win |
 | `HOARD_LOG_LEVEL` | `info` | `debug` for more detail |

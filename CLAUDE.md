@@ -59,7 +59,7 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - Tag rename/merge exists in the core, REST and MCP but has no screen in the web UI.
 - Thumbnails for audio, video, fonts, 3D models and image formats the server cannot decode are rendered by the browser (`web/src/lib/thumbs.ts`). Assets added only over MCP have none until the library is opened once, and the AI agent has no image for them before that.
 - Links handed to agents are built from the request's `Host` (`Server.BaseURL`), which is not validated. A proxy that rewrites `Host` produces wrong links; `HOARD_PUBLIC_URL` overrides it globally.
-- Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket. There is no trusted-proxy setting.
+- Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket, unless `HOARD_TRUSTED_PROXIES` lists the proxy: then it keys on the right-most `X-Forwarded-For` address that is not a trusted proxy (`Server.clientIP`). `X-Forwarded-For` from any other peer is ignored. Only the throttle uses it; `Server.BaseURL` still uses `Host`.
 - Revoking an API token does not revoke signed links it was already given (two hours at most). The link-signing key cannot be rotated without editing the database.
 - Mutations of one asset are not serialised beyond the sidecar write. Two concurrent edits are both applied; the sidecar reflects the later one.
 - Uploading a folder flattens it: relative paths are not kept, so files with the same name in one asset replace each other.
