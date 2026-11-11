@@ -134,6 +134,32 @@ Signed links (valid two hours, no token needed), handed out by the MCP tools:
 - `GET /atlas?ids=…&padding=…&max_size=…&power_of_two=…&extrude=…&format=…&res_path=…&exp=…&sig=…`: the signature covers the asset ids (in order) and every option.
 - `GET /derive/{assetId}/{filename}?width=&height=&scale=&filter=nearest\|linear&format=png\|jpeg&quality=&exp=…&sig=…`: the signature covers the asset, the file and every parameter; changing one gives `403`.
 
+## Asset requests and review
+
+The request queue for generator agents, steering of assets and notes. Requests: `status` is `open` → `claimed` (a lease) → `submitted` → `done` (or `cancelled`); `kind` is `new` or `rework`. Everything that changes state is `POST` or `PATCH`; all endpoints accept a session or an API token.
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /requests?status=&project=&kind=&type=&mine=&target=&sort=&limit=` | List; `status` and `type` take comma-separated values, `project` may be `none`, `mine=1` only requests the caller holds, `sort=recent` newest change first. Returns `{ "items": […] }` with submissions |
+| `POST /requests` | Create: `title`, `description`, `asset_type`, `project_id`, `spec` (object, at most 16 KiB), `priority` (integer, higher first), `placeholder` (also generate one) |
+| `GET /requests/{id}` | One request with `submissions` (each with `verdict`, reviewer `feedback`) and, for rework, the open `notes` of the target asset |
+| `PATCH /requests/{id}` | Change `title`, `description`, `asset_type`, `spec`, `priority`, `project_id` of an unfinished request |
+| `POST /requests/{id}/cancel` | Withdraw |
+| `POST /requests/{id}/claim` | `{ "lease_minutes": 60 }` (max 1440); `409 conflict` if someone else holds it or it is not open. Atomic: of two simultaneous claims exactly one succeeds |
+| `POST /requests/{id}/renew` | Extend your lease |
+| `POST /requests/{id}/release` | Give it back (the claimer, or any browser session) |
+| `POST /requests/{id}/submit` | `{ "asset_ids": […], "note": "" }`: 1 to 20 existing, non-trashed assets |
+| `POST /requests/{id}/placeholder` | Generate (or return) the placeholder asset |
+| `POST /requests/{id}/submissions/{asset}/accept` | `{ "supersede": true }` (default): approve the candidate, finish the request, supersede the replaced asset and move its project usage |
+| `POST /requests/{id}/submissions/{asset}/reject` | `{ "feedback": "…" }` (required): rework note on the candidate, request back to open |
+| `GET /assets/{id}/review` | Status, notes (including resolved) and the requests the asset takes part in |
+| `POST /assets/{id}/review` | `{ "verdict": "approve" \| "reject" \| "rework", "feedback": "", "priority": 0, "project_id": "" }`; feedback is required for reject and rework. Rework creates or updates the asset's rework request and returns it |
+| `GET /assets/{id}/notes?open=1` | Notes oldest first; `open=1` leaves resolved ones out |
+| `POST /assets/{id}/notes` | `{ "body": "…", "kind": "comment" }` (`comment`, `rework`, `approval`, `rejection`; body at most 8 KiB) |
+| `POST /notes/{id}/resolve` | Mark a note as dealt with |
+
+Accepting or rejecting a submission needs a request in `submitted` and a candidate still pending (`409 conflict` otherwise). It is refused with `400` when the caller is the identity that submitted the candidate, unless the caller is a browser session. Reads never change state: a claim whose lease ran out is shown as `open` and settled by the next write.
+
 ## Signed links
 
 MCP tools hand out links that need no token and expire after two hours:

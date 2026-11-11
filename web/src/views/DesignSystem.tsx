@@ -2,6 +2,7 @@ import { Download, Pencil, Plus, Search, Sparkles, Trash2, Upload } from 'lucide
 import { useState } from 'react'
 import { getMeta, toast } from '../lib/store'
 import { SeverityIcon } from './panels/Fit'
+import { RequestBadge, STATUS_LABEL, StatusBadge } from '../ui/status'
 import { Button, Check, Chip, CodeBlock, Dialog, Empty, Field, Menu, Tabs, TagInput, TypeBadge, typeColor, typeIcon } from '../ui'
 
 const COLORS = ['bg', 'surface-1', 'surface-2', 'surface-3', 'border', 'border-strong', 'text', 'text-muted', 'text-faint', 'accent', 'accent-hover', 'accent-soft', 'danger', 'success', 'warning', 'info']
@@ -142,6 +143,21 @@ export function DesignSystem() {
           />
         </div>
         <Tabs value={tab} onChange={setTab} tabs={[{ id: 'one', label: 'Tab one' }, { id: 'two', label: 'Tab two' }, { id: 'three', label: 'Tab three' }]} />
+      </section>
+
+      <section className="stack">
+        <h2>Review status</h2>
+        <p className="muted">Asset status and the state of asset requests. Colours are the <code>--status-*</code> tokens; cards in the library show the badge for everything except unreviewed and draft assets.</p>
+        <div className="row-wrap">
+          {Object.keys(STATUS_LABEL).map((st) => (
+            <StatusBadge key={st} status={st} />
+          ))}
+        </div>
+        <div className="row-wrap">
+          {(['open', 'claimed', 'submitted', 'done', 'cancelled'] as const).map((st) => (
+            <RequestBadge key={st} status={st} />
+          ))}
+        </div>
       </section>
 
       <section className="stack">

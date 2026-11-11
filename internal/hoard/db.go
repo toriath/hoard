@@ -335,6 +335,9 @@ CREATE TABLE activity (
 CREATE INDEX activity_at ON activity(at);
 CREATE INDEX activity_asset ON activity(asset_id, seq);
 `,
+	// 3: the authenticated identity (user, channel, token) that submitted a
+	// candidate, without the caller-chosen agent label, for the self-review rule.
+	`ALTER TABLE request_submissions ADD COLUMN submitted_key TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Service) migrate() error {

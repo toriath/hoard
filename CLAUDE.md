@@ -72,6 +72,10 @@ Delivery (`internal/hoard/{repo,atlas,derive,hints}.go`): the audit command is r
 - The `show_assets` gallery plays only audio files up to 2 MiB and shows thumbnails only; video, 3D and larger audio need the web UI. It is stateless: reopening a conversation starts with nothing ticked.
 - The image job has registry write permission also on pull requests from branches of this repository (forks and Dependabot get a read-only token).
 
+- Asset requests: a claim expires lazily (when requests are read or claimed), there is no timer or activity entry for it. Accepting a submission marks the other waiting candidates "not chosen" but keeps their assets. A request whose lease runs out while an agent is still uploading can be claimed by another agent.
+- Limits: 2000 unfinished requests per project, 500 notes per asset, 50 candidates per request. Reads never write: an expired lease shows as open at once and is settled (with a `request.expire` activity entry) by the next write.
+- Placeholders cover sprite, ui, tileset, texture, vfx (PNG) and sfx, music, voice (WAV) only; the title is drawn with a 7x13 ASCII bitmap font (other characters show as `?`).
+
 ## Conventions
 
 - Schema changes: append a migration to `migrations` in `internal/hoard/db.go`; never edit an applied one.
