@@ -51,7 +51,7 @@ These came out of a security review. Do not weaken them without a reason written
 
 Covered by tests or checked in a real deployment: the web UI, MCP from a real client including uploads over signed links, the container on TrueNAS SCALE, access through a reverse proxy.
 
-Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Do not describe these as working.
+Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Also checked only in jsdom (component tests), never in a real browser or on a phone: the animated sprite-sheet preview, the "More" menu of the phone navigation, the keyboard-operable waveform and the skip link. The index rebuild from sidecars is tested with a generated library, not with a real deployment. Do not describe these as working.
 
 ## Known gaps
 
@@ -59,6 +59,7 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - Tag rename/merge exists in the core, REST and MCP but has no screen in the web UI.
 - Thumbnails for audio, video, fonts, 3D models and image formats the server cannot decode are rendered by the browser (`web/src/lib/thumbs.ts`). Assets added only over MCP have none until the library is opened once, and the AI agent has no image for them before that.
 - Links handed to agents are built from the request's `Host` (`Server.BaseURL`), which is not validated. A proxy that rewrites `Host` produces wrong links; `HOARD_PUBLIC_URL` overrides it globally.
+- A rebuilt index (database lost, sidecars intact) has no users, tokens, settings, notes, requests, activity or project briefs; until the first account exists again anyone who can reach the port can create it.
 - Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket, unless `HOARD_TRUSTED_PROXIES` lists the proxy: then it keys on the right-most `X-Forwarded-For` address that is not a trusted proxy (`Server.clientIP`). `X-Forwarded-For` from any other peer is ignored. Only the throttle uses it; `Server.BaseURL` still uses `Host`.
 - Revoking an API token does not revoke signed links it was already given (two hours at most). The link-signing key cannot be rotated without editing the database.
 - Uploading a folder flattens it: relative paths are not kept, so files with the same name in one asset replace each other.
