@@ -114,9 +114,16 @@ func TestSelfReviewRefused(t *testing.T) {
 	if _, err := s.RejectAsset(gen, a.ID, "x"); err == nil {
 		t.Error("self reject of a candidate under review")
 	}
-	// the same token with a different label is a different agent
-	if _, err := s.RejectSubmission(WithAgent(gen, "reviewer"), r.ID, a.ID, "fine, another agent"); err != nil {
-		t.Errorf("other agent: %v", err)
+	// a label is the caller's choice and must not make it look like someone else
+	r0, a0 := submitted(t, s, "labelled", WithAgent(gen, "gen-a"))
+	if _, err := s.AcceptSubmission(WithAgent(gen, "gen-b"), r0.ID, a0.ID, true); err == nil {
+		t.Error("another label on the same token reviewed its own work")
+	}
+	if _, err := s.RejectSubmission(gen, r0.ID, a0.ID, "x"); err == nil {
+		t.Error("no label on the same token reviewed its own work")
+	}
+	if _, err := s.ApproveAsset(WithAgent(gen, "gen-b"), a0.ID, ""); err == nil {
+		t.Error("approve with another label")
 	}
 	// the user in the browser always may; so may a different token
 	r2, a2 := submitted(t, s, "mine2", gen)

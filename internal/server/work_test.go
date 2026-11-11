@@ -179,10 +179,18 @@ func TestMCPWorkLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	connect := func() *mcp.ClientSession {
+	var second struct {
+		Secret string `json:"secret"`
+	}
+	e.do("POST", "/api/v1/tokens", `{"name":"reviewer"}`, nil, http.StatusCreated, &second)
+	connect := func(token ...string) *mcp.ClientSession {
+		tok := e.token
+		if len(token) > 0 {
+			tok = token[0]
+		}
 		client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "1"}, nil)
 		s, err := client.Connect(ctx, &mcp.StreamableClientTransport{
-			Endpoint: e.ts.URL + "/mcp", HTTPClient: &http.Client{Transport: bearerTransport{e.token}},
+			Endpoint: e.ts.URL + "/mcp", HTTPClient: &http.Client{Transport: bearerTransport{tok}},
 		}, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -190,7 +198,7 @@ func TestMCPWorkLoop(t *testing.T) {
 		t.Cleanup(func() { s.Close() })
 		return s
 	}
-	var coder, gen *mcp.ClientSession
+	var coder, gen, rev *mcp.ClientSession
 	call := func(s *mcp.ClientSession, name string, args map[string]any) map[string]any {
 		t.Helper()
 		// Both agents share one token; the generator tells itself apart with a label.
@@ -203,7 +211,7 @@ func TestMCPWorkLoop(t *testing.T) {
 		}
 		return resultJSON(t, res)
 	}
-	coder, gen = connect(), connect()
+	coder, gen, rev = connect(), connect(), connect(second.Secret)
 
 	// Tools and prompts are published with descriptions.
 	tl, _ := coder.ListTools(ctx, nil)
@@ -285,7 +293,7 @@ func TestMCPWorkLoop(t *testing.T) {
 	if sub["request"].(map[string]any)["status"] != "submitted" || sub["warning"] != nil {
 		t.Fatalf("submit = %v", sub)
 	}
-	acc := call(coder, "review_submission", map[string]any{"request_id": reqID, "asset_id": candID, "decision": "accept"})
+	acc := call(rev, "review_submission", map[string]any{"request_id": reqID, "asset_id": candID, "decision": "accept"})
 	if acc["request"].(map[string]any)["status"] != "done" {
 		t.Fatalf("accept = %v", acc)
 	}
@@ -300,7 +308,7 @@ func TestMCPWorkLoop(t *testing.T) {
 	}
 
 	// 5. Steering: send it back for rework, the generator receives the feedback.
-	rw := call(coder, "review_asset", map[string]any{"asset_id": candID, "verdict": "rework", "feedback": "make it shinier", "priority": 1})
+	rw := call(rev, "review_asset", map[string]any{"asset_id": candID, "verdict": "rework", "feedback": "make it shinier", "priority": 1})
 	rwReq := rw["rework_request"].(map[string]any)
 	if rw["asset"].(map[string]any)["status"] != "rework" || rwReq["kind"] != "rework" {
 		t.Fatalf("rework = %v", rw)
@@ -320,6 +328,14 @@ func TestMCPWorkLoop(t *testing.T) {
 	call(gen, "release_request", map[string]any{"request_id": rwReq["id"]})
 	if res, _ := coder.CallTool(ctx, &mcp.CallToolParams{Name: "make_placeholder", Arguments: map[string]any{"request_id": rwReq["id"]}}); !res.IsError {
 		t.Error("placeholder for rework accepted")
+	}
+	// A label is the caller's choice: the generator with another label is still refused.
+	own0 := call(coder, "request_asset", map[string]any{"title": "Labelled", "asset_type": "sprite"})["request"].(map[string]any)["id"].(string)
+	lab := call(coder, "create_asset", map[string]any{"name": "labelled"})["asset"].(map[string]any)["id"].(string)
+	call(gen, "submit_request", map[string]any{"request_id": own0, "asset_ids": []string{lab}})
+	genB := map[string]any{"request_id": own0, "asset_id": lab, "decision": "accept"}
+	if res, err := gen.CallTool(ctx, &mcp.CallToolParams{Name: "review_submission", Arguments: genB}); err != nil || !res.IsError {
+		t.Errorf("review by the submitting token: %v %+v", err, res)
 	}
 	// Self-review: an agent cannot judge what it submitted itself (same token, no label).
 	own := call(coder, "request_asset", map[string]any{"title": "Own work", "asset_type": "sprite"})["request"].(map[string]any)["id"].(string)

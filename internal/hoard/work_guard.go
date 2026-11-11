@@ -45,17 +45,25 @@ func claimerOf(ctx context.Context) string {
 	return a
 }
 
+// identityKey is the authenticated identity behind ctx: user, channel and
+// token name. Unlike claimerOf it contains nothing the caller chose, so a
+// different agent label cannot make an agent look like someone else.
+func identityKey(ctx context.Context) string {
+	a := ActorFrom(ctx)
+	return a.UserID + "|" + a.Via + "|" + a.TokenName
+}
+
 // errSelfReview is returned when an agent judges what it submitted itself.
 var errSelfReview = invalid("a submission cannot be reviewed by the agent that made it; ask the user")
 
 // refuseSelfReview refuses a review by the identity that submitted the work.
 // Browser sessions are the user and always allowed; a different agent (for
 // example another token) may review.
-func refuseSelfReview(ctx context.Context, submittedBy string) error {
+func refuseSelfReview(ctx context.Context, submittedKey string) error {
 	if ActorFrom(ctx).Via == "web" {
 		return nil
 	}
-	if submittedBy != "" && submittedBy == claimerOf(ctx) {
+	if submittedKey != "" && submittedKey == identityKey(ctx) {
 		return errSelfReview
 	}
 	return nil
@@ -112,7 +120,7 @@ func reviewGuard(ctx context.Context, tx *sql.Tx, assetID, verdict string) error
 		if ActorFrom(ctx).Via != "web" {
 			var n int
 			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_submissions s JOIN asset_requests r ON r.id = s.request_id
-				WHERE s.asset_id = ? AND s.verdict = '' AND s.submitted_by = ? AND r.status = 'submitted'`, assetID, claimerOf(ctx)).Scan(&n); err != nil {
+				WHERE s.asset_id = ? AND s.verdict = '' AND s.submitted_key = ? AND r.status = 'submitted'`, assetID, identityKey(ctx)).Scan(&n); err != nil {
 				return err
 			}
 			if n > 0 {

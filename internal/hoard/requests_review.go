@@ -97,10 +97,10 @@ func (s *Service) SubmitRequest(ctx context.Context, id string, assetIDs []strin
 					return err
 				}
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO request_submissions(request_id, asset_id, note, verdict, submitted_by, submitted_at)
-				VALUES(?, ?, ?, '', ?, ?) ON CONFLICT(request_id, asset_id) DO UPDATE SET
-				note = excluded.note, verdict = '', submitted_by = excluded.submitted_by, submitted_at = excluded.submitted_at`,
-				id, aid, note, actor, ts); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO request_submissions(request_id, asset_id, note, verdict, submitted_by, submitted_key, submitted_at)
+				VALUES(?, ?, ?, '', ?, ?, ?) ON CONFLICT(request_id, asset_id) DO UPDATE SET
+				note = excluded.note, verdict = '', submitted_by = excluded.submitted_by, submitted_key = excluded.submitted_key, submitted_at = excluded.submitted_at`,
+				id, aid, note, actor, identityKey(ctx), ts); err != nil {
 				return err
 			}
 			s.record(ctx, tx, "request.submit", aid, id, r.Title)
@@ -135,7 +135,7 @@ func pendingSubmission(ctx context.Context, tx *sql.Tx, requestID, assetID strin
 	}
 	var verdict, by string
 	var deleted sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT s.verdict, s.submitted_by, a.deleted_at FROM request_submissions s JOIN assets a ON a.id = s.asset_id
+	err = tx.QueryRowContext(ctx, `SELECT s.verdict, s.submitted_key, a.deleted_at FROM request_submissions s JOIN assets a ON a.id = s.asset_id
 		WHERE s.request_id = ? AND s.asset_id = ?`, requestID, assetID).Scan(&verdict, &by, &deleted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, invalid("asset %s was not submitted for request %s", assetID, requestID)
