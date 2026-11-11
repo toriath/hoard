@@ -267,7 +267,7 @@ export function ensureThumb(asset: Asset, force = false): Promise<Asset | null> 
       const out = await withTimeout(render(asset, file), 45_000)
       if (!out?.blob) throw new Error('no preview produced')
       let updated = await api.putThumbnail(asset.id, out.blob)
-      if (out.attrs && Object.keys(out.attrs).length) updated = await api.update(asset.id, { attrs: out.attrs })
+      if (out.attrs && Object.keys(out.attrs).length) updated = await api.putTechnical(asset.id, out.attrs)
       emitAsset(updated)
       return updated
     } catch (e) {

@@ -88,6 +88,7 @@ func New(svc *hoard.Service, agent *ai.Agent, cfg config.Config, log *slog.Logge
 	api("GET /api/v1/assets/{id}/thumbnail", s.handleGetThumb)
 	api("PUT /api/v1/assets/{id}/thumbnail", s.handlePutThumb)
 	api("DELETE /api/v1/assets/{id}/thumbnail", s.handleDeleteThumb)
+	api("PUT /api/v1/assets/{id}/technical", s.handlePutTechnical)
 	api("GET /api/v1/download", s.handleDownloadMany)
 
 	api("GET /api/v1/collections", s.handleListCollections)

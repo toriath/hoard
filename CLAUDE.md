@@ -62,7 +62,6 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket, unless `HOARD_TRUSTED_PROXIES` lists the proxy: then it keys on the right-most `X-Forwarded-For` address that is not a trusted proxy (`Server.clientIP`). `X-Forwarded-For` from any other peer is ignored. Only the throttle uses it; `Server.BaseURL` still uses `Host`.
 - Revoking an API token does not revoke signed links it was already given (two hours at most). The link-signing key cannot be rotated without editing the database.
 - Uploading a folder flattens it: relative paths are not kept, so files with the same name in one asset replace each other.
-- Rendering a preview in the browser also updates technical attributes, which bumps the asset's "changed" time.
 - The `show_assets` gallery plays only audio files up to 2 MiB and shows thumbnails only; video, 3D and larger audio need the web UI. It is stateless: reopening a conversation starts with nothing ticked.
 - The waveform cannot be scrubbed from the keyboard. There is no frontend test suite.
 - The image job has registry write permission also on pull requests from branches of this repository (forks and Dependabot get a read-only token).
@@ -71,6 +70,7 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 
 - Schema changes: append a migration to `migrations` in `internal/hoard/db.go`; never edit an applied one.
 - Mutations of one asset are serialised by `lockAssets` (a striped mutex set, taken before `syncSidecar`'s own `assetLock`; never the other way round, never while streaming an upload). New code that reads an asset and then writes it back must take it.
+- Attributes the browser measures while rendering a preview (duration, sample rate, channels, size, triangles) go through `PUT /assets/{id}/technical` (`SetTechnicalAttrs`): an allow-list of numeric keys, no `updated_at` bump, no activity entry. Do not send them through `PATCH`.
 - Every asset mutation must keep three things in sync: the DB row, the FTS row (`reindex`) and the `asset.json` sidecar (`syncSidecar`).
 - New UI colours, sizes and controls go into `web/src/styles/tokens.css` / `components.css` first and show up on the `/design` page.
 - Dialogs, menus and form fields come from `web/src/ui`; they handle focus, Escape and labelling. Do not wrap several controls in one `<label>`.
