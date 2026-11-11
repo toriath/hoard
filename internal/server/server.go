@@ -349,12 +349,12 @@ func (s *Server) clientIP(r *http.Request) string {
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if len(s.cfg.TrustedProxies) == 0 {
+	peer, perr := netip.ParseAddr(host)
+	if perr != nil {
 		return host
 	}
-	peer, err := netip.ParseAddr(host)
-	if err != nil || !s.trusted(peer) {
-		return host
+	if len(s.cfg.TrustedProxies) == 0 || !s.trusted(peer) {
+		return throttleKey(peer)
 	}
 	var hops []string
 	for _, h := range r.Header.Values("X-Forwarded-For") {
@@ -367,13 +367,26 @@ func (s *Server) clientIP(r *http.Request) string {
 		}
 		a, err := netip.ParseAddr(hop)
 		if err != nil {
-			return host // garbage in the chain: do not guess
+			return throttleKey(peer) // garbage in the chain: do not guess
 		}
 		if !s.trusted(a) {
-			return a.Unmap().WithZone("").String()
+			return throttleKey(a)
 		}
 	}
-	return host
+	return throttleKey(peer)
+}
+
+// throttleKey is the canonical form of an address for the throttle: IPv4-
+// mapped addresses become IPv4, zones are dropped, and an IPv6 address stands
+// for its /64 (one subscriber typically owns a whole /64, so rotating through
+// it must not buy more attempts).
+func throttleKey(a netip.Addr) string {
+	a = a.Unmap().WithZone("")
+	if a.Is6() {
+		p, _ := a.Prefix(64)
+		return p.String()
+	}
+	return a.String()
 }
 
 func (s *Server) trusted(a netip.Addr) bool {
