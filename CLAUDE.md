@@ -69,6 +69,7 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - The image job has registry write permission also on pull requests from branches of this repository (forks and Dependabot get a read-only token).
 
 - Asset requests: a claim expires lazily (when requests are read or claimed), there is no timer or activity entry for it. Accepting a submission marks the other waiting candidates "not chosen" but keeps their assets. A request whose lease runs out while an agent is still uploading can be claimed by another agent.
+- Limits: 2000 unfinished requests per project, 500 notes per asset, 50 candidates per request. Reads never write: an expired lease shows as open at once and is settled (with a `request.expire` activity entry) by the next write.
 - Placeholders cover sprite, ui, tileset, texture, vfx (PNG) and sfx, music, voice (WAV) only; the title is drawn with a 7x13 ASCII bitmap font (other characters show as `?`).
 
 ## Conventions

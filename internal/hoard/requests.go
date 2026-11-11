@@ -54,6 +54,10 @@ type Request struct {
 	UpdatedAt          string         `json:"updated_at"`
 	ClosedAt           string         `json:"closed_at,omitempty"`
 
+	// PlaceholderError is set by CreateRequest when a placeholder was asked for
+	// but could not be made; the request exists, retry with MakePlaceholder.
+	PlaceholderError string `json:"placeholder_error,omitempty"`
+
 	Submissions []Submission `json:"submissions,omitempty"`
 	// Notes holds the open (unresolved) notes of the target asset of a rework
 	// request, oldest first. Only GetRequest fills it.
@@ -112,9 +116,17 @@ type RequestQuery struct {
 	Limit       int      // default 100, max 500
 }
 
+// sqlExpired is true for a claim whose lease has run out. Reads treat such a
+// request as open without writing anything; the write paths (expireClaimsTx)
+// make it official.
+const sqlExpired = `(r.status = 'claimed' AND r.claim_expires_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`
+
+const sqlStatus = `(CASE WHEN ` + sqlExpired + ` THEN 'open' ELSE r.status END)`
+
 const requestCols = `r.id, COALESCE(r.project_id, ''), COALESCE(p.name, ''), r.kind, r.title, r.description, r.asset_type, r.spec,
 	COALESCE(r.target_asset_id, ''), COALESCE(t.name, ''), COALESCE(r.placeholder_asset_id, ''), COALESCE(r.accepted_asset_id, ''),
-	r.status, r.priority, r.claimed_by, r.claim_expires_at, r.created_by, r.created_at, r.updated_at, r.closed_at`
+	` + sqlStatus + `, r.priority, (CASE WHEN ` + sqlExpired + ` THEN '' ELSE r.claimed_by END),
+	(CASE WHEN ` + sqlExpired + ` THEN NULL ELSE r.claim_expires_at END), r.created_by, r.created_at, r.updated_at, r.closed_at`
 
 const requestFrom = ` FROM asset_requests r LEFT JOIN projects p ON p.id = r.project_id LEFT JOIN assets t ON t.id = r.target_asset_id`
 
@@ -149,13 +161,42 @@ func cleanSpec(spec map[string]any) (string, error) {
 
 func wkClampPriority(p int) int { return max(-100, min(100, p)) }
 
-// expireClaims returns requests whose lease ran out to the queue.
-func (s *Service) expireClaims(ctx context.Context) {
+// expireClaimsTx returns requests whose lease ran out to the queue and
+// records it. Only write paths call it, so reading never writes.
+func (s *Service) expireClaimsTx(ctx context.Context, tx *sql.Tx) error {
 	ts := now()
-	if _, err := s.db.ExecContext(ctx, `UPDATE asset_requests SET status = 'open', claimed_by = '', claim_expires_at = NULL, updated_at = ?
-		WHERE status = 'claimed' AND claim_expires_at < ?`, ts, ts); err != nil {
-		s.log.Warn("expire claims", "err", err)
+	rows, err := tx.QueryContext(ctx, `SELECT id, title, COALESCE(target_asset_id, '') FROM asset_requests WHERE status = 'claimed' AND claim_expires_at < ?`, ts)
+	if err != nil {
+		return err
 	}
+	type exp struct{ id, title, target string }
+	var list []exp
+	for rows.Next() {
+		var e exp
+		if err := rows.Scan(&e.id, &e.title, &e.target); err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, e)
+	}
+	rows.Close()
+	for _, e := range list {
+		if _, err := tx.ExecContext(ctx, `UPDATE asset_requests SET status = 'open', claimed_by = '', claim_expires_at = NULL, updated_at = ? WHERE id = ?`, ts, e.id); err != nil {
+			return err
+		}
+		s.record(ctx, tx, "request.expire", e.target, e.id, e.title)
+	}
+	return nil
+}
+
+// writeTx is tx for the request queue: stale leases are settled first.
+func (s *Service) writeTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.expireClaimsTx(ctx, tx); err != nil {
+			return err
+		}
+		return fn(tx)
+	})
 }
 
 // insertRequest validates and stores a new request inside tx.
@@ -183,6 +224,13 @@ func (s *Service) insertRequest(ctx context.Context, tx *sql.Tx, in RequestInput
 	if in.ProjectID != "" {
 		if err := mustExist(ctx, tx, "projects", in.ProjectID); err != nil {
 			return "", err
+		}
+		var open int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_requests WHERE project_id = ? AND status IN ('open', 'claimed', 'submitted')`, in.ProjectID).Scan(&open); err != nil {
+			return "", err
+		}
+		if open >= maxActiveRequestsPerProject {
+			return "", capErr("unfinished requests in one project", maxActiveRequestsPerProject)
 		}
 		project = in.ProjectID
 	}
@@ -219,18 +267,24 @@ func (s *Service) CreateRequest(ctx context.Context, in RequestInput) (*Request,
 	if err != nil {
 		return nil, err
 	}
+	var phErr string
 	if in.Placeholder {
 		if _, err := s.MakePlaceholder(ctx, id); err != nil {
-			return nil, fmt.Errorf("request %s was created but its placeholder failed: %w", id, err)
+			// The request exists: report the failure with it instead of an
+			// error that invites a retry (and a duplicate request).
+			phErr = err.Error()
 		}
 	}
-	return s.GetRequest(ctx, id)
+	r, err := s.GetRequest(ctx, id)
+	if r != nil {
+		r.PlaceholderError = phErr
+	}
+	return r, err
 }
 
 // GetRequest returns one request with its submissions and, for rework, the
 // open notes of the target asset.
 func (s *Service) GetRequest(ctx context.Context, id string) (*Request, error) {
-	s.expireClaims(ctx)
 	r, err := scanRequest(s.db.QueryRowContext(ctx, `SELECT `+requestCols+requestFrom+` WHERE r.id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("request %q: %w", id, ErrNotFound)
@@ -292,7 +346,7 @@ func requestWhere(ctx context.Context, q RequestQuery) (string, []any) {
 	where := []string{"1 = 1"}
 	var args []any
 	if len(q.Statuses) > 0 {
-		where = append(where, `r.status IN (`+placeholders(len(q.Statuses))+`)`)
+		where = append(where, sqlStatus+` IN (`+placeholders(len(q.Statuses))+`)`)
 		args = append(args, anySlice(q.Statuses)...)
 	}
 	switch q.Project {
@@ -312,7 +366,7 @@ func requestWhere(ctx context.Context, q RequestQuery) (string, []any) {
 		args = append(args, anySlice(q.AssetTypes)...)
 	}
 	if q.ClaimedByMe {
-		where = append(where, `r.status = 'claimed' AND r.claimed_by = ?`)
+		where = append(where, `r.status = 'claimed' AND NOT `+sqlExpired+` AND r.claimed_by = ?`)
 		args = append(args, ActorFrom(ctx).String())
 	}
 	if q.Target != "" {
@@ -345,7 +399,6 @@ func (s *Service) ListRequests(ctx context.Context, q RequestQuery) ([]*Request,
 	if err := validateRequestQuery(q); err != nil {
 		return nil, err
 	}
-	s.expireClaims(ctx)
 	if q.Limit <= 0 {
 		q.Limit = 100
 	}
@@ -381,7 +434,6 @@ func (s *Service) RequestsForAsset(ctx context.Context, assetID string) ([]*Requ
 	if !ValidAssetID(assetID) {
 		return nil, fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
 	}
-	s.expireClaims(ctx)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+requestCols+requestFrom+`
 		WHERE r.target_asset_id = ?1 OR r.placeholder_asset_id = ?1 OR r.accepted_asset_id = ?1
 			OR r.id IN (SELECT request_id FROM request_submissions WHERE asset_id = ?1)
@@ -424,7 +476,7 @@ func requestFinished(r *Request) error {
 // UpdateRequest changes title, description, type, spec, priority or project
 // of a request that is not finished.
 func (s *Service) UpdateRequest(ctx context.Context, id string, p RequestPatch) (*Request, error) {
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
 		r, err := loadRequestTx(ctx, tx, id)
 		if err != nil {
 			return err
@@ -501,7 +553,7 @@ func (s *Service) UpdateRequest(ctx context.Context, id string, p RequestPatch) 
 // CancelRequest withdraws a request. Candidates already submitted are kept
 // as ordinary draft assets.
 func (s *Service) CancelRequest(ctx context.Context, id string) (*Request, error) {
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
 		r, err := loadRequestTx(ctx, tx, id)
 		if err != nil {
 			return err
@@ -540,8 +592,8 @@ func leaseFor(minutes int) (time.Duration, string) {
 // of two concurrent claims exactly one wins and the other gets ErrConflict.
 func (s *Service) ClaimRequest(ctx context.Context, id string, leaseMinutes int) (*Request, error) {
 	_, exp := leaseFor(leaseMinutes)
-	actor := ActorFrom(ctx).String()
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	actor := claimerOf(ctx)
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
 		ts := now()
 		res, err := tx.ExecContext(ctx, `UPDATE asset_requests SET status = 'claimed', claimed_by = ?, claim_expires_at = ?, updated_at = ?
 			WHERE id = ? AND (status = 'open' OR (status = 'claimed' AND claim_expires_at < ?))`, actor, exp, ts, id, ts)
@@ -579,11 +631,11 @@ func (s *Service) ClaimNext(ctx context.Context, q RequestQuery, leaseMinutes in
 		return nil, err
 	}
 	_, exp := leaseFor(leaseMinutes)
-	actor := ActorFrom(ctx).String()
+	actor := claimerOf(ctx)
 	filter := RequestQuery{Project: q.Project, Kind: q.Kind, AssetTypes: q.AssetTypes}
 	where, args := requestWhere(ctx, filter)
 	var id string
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
 		ts := now()
 		a := []any{actor, exp, ts}
 		a = append(a, args...)
@@ -613,12 +665,12 @@ func (s *Service) ClaimNext(ctx context.Context, q RequestQuery, leaseMinutes in
 // RenewClaim extends the lease of a request the acting identity holds.
 func (s *Service) RenewClaim(ctx context.Context, id string, leaseMinutes int) (*Request, error) {
 	_, exp := leaseFor(leaseMinutes)
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
 		r, err := loadRequestTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		if r.Status != "claimed" || r.ClaimedBy != ActorFrom(ctx).String() {
+		if r.Status != "claimed" || r.ClaimedBy != claimerOf(ctx) {
 			return fmt.Errorf("request %s is not claimed by you (status %s): %w", id, r.Status, ErrConflict)
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE asset_requests SET claim_expires_at = ?, updated_at = ? WHERE id = ?`, exp, now(), id)
@@ -634,7 +686,7 @@ func (s *Service) RenewClaim(ctx context.Context, id string, leaseMinutes int) (
 // it, and so can anyone in the web UI (to free a request whose agent died).
 func (s *Service) ReleaseClaim(ctx context.Context, id string) (*Request, error) {
 	a := ActorFrom(ctx)
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.writeTx(ctx, func(tx *sql.Tx) error {
 		r, err := loadRequestTx(ctx, tx, id)
 		if err != nil {
 			return err
@@ -642,7 +694,7 @@ func (s *Service) ReleaseClaim(ctx context.Context, id string) (*Request, error)
 		if r.Status != "claimed" {
 			return fmt.Errorf("request %s is %s, not claimed: %w", id, r.Status, ErrConflict)
 		}
-		if r.ClaimedBy != a.String() && a.Via != "web" {
+		if r.ClaimedBy != claimerOf(ctx) && a.Via != "web" {
 			return fmt.Errorf("request %s is claimed by %s: %w", id, r.ClaimedBy, ErrConflict)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE asset_requests SET status = 'open', claimed_by = '', claim_expires_at = NULL, updated_at = ?
@@ -656,241 +708,4 @@ func (s *Service) ReleaseClaim(ctx context.Context, id string) (*Request, error)
 		return nil, err
 	}
 	return s.GetRequest(ctx, id)
-}
-
-// ---- submitting ----
-
-// SubmitRequest offers existing assets as the result of a request. The
-// request moves to "submitted" and the claim ends. The assets must exist and
-// not be in the trash; those without a review status become drafts, and for
-// rework requests derived_from is set to the asset being reworked.
-// Submitting is allowed for the claimer and for unclaimed requests; a request
-// someone else holds a live lease on is refused.
-func (s *Service) SubmitRequest(ctx context.Context, id string, assetIDs []string, note string) (*Request, error) {
-	if len(assetIDs) == 0 {
-		return nil, invalid("submit at least one asset id")
-	}
-	if len(assetIDs) > maxSubmitAssets {
-		return nil, invalid("at most %d candidates per submission", maxSubmitAssets)
-	}
-	note, err := cleanNoteBody(note, false)
-	if err != nil {
-		return nil, err
-	}
-	actor := ActorFrom(ctx).String()
-	seen := map[string]bool{}
-	err = s.tx(ctx, func(tx *sql.Tx) error {
-		r, err := loadRequestTx(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		if err := requestFinished(r); err != nil {
-			return err
-		}
-		if r.Status == "claimed" && r.ClaimedBy != actor && r.ClaimExpiresAt >= now() {
-			return fmt.Errorf("request %s is claimed by %s: %w", id, r.ClaimedBy, ErrConflict)
-		}
-		ts := now()
-		for _, aid := range assetIDs {
-			if seen[aid] {
-				continue
-			}
-			seen[aid] = true
-			if !ValidAssetID(aid) {
-				return invalid("%q is not an asset id", aid)
-			}
-			if aid == r.TargetAssetID || aid == r.PlaceholderAssetID {
-				return invalid("asset %s is the asset this request replaces; submit the new candidate instead", aid)
-			}
-			var deleted sql.NullString
-			if err := tx.QueryRowContext(ctx, `SELECT deleted_at FROM assets WHERE id = ?`, aid).Scan(&deleted); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("asset %q: %w", aid, ErrNotFound)
-				}
-				return err
-			}
-			if deleted.Valid {
-				return invalid("asset %s is in the trash; restore it or submit another", aid)
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE assets SET status = CASE WHEN status IN ('', 'rejected', 'rework') THEN 'draft' ELSE status END, updated_at = ? WHERE id = ?`, ts, aid); err != nil {
-				return err
-			}
-			if r.Kind == "rework" && r.TargetAssetID != "" {
-				if _, err := tx.ExecContext(ctx, `UPDATE assets SET derived_from = ? WHERE id = ? AND derived_from = ''`, r.TargetAssetID, aid); err != nil {
-					return err
-				}
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO request_submissions(request_id, asset_id, note, verdict, submitted_by, submitted_at)
-				VALUES(?, ?, ?, '', ?, ?) ON CONFLICT(request_id, asset_id) DO UPDATE SET
-				note = excluded.note, verdict = '', submitted_by = excluded.submitted_by, submitted_at = excluded.submitted_at`,
-				id, aid, note, actor, ts); err != nil {
-				return err
-			}
-			s.record(ctx, tx, "request.submit", aid, id, r.Title)
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE asset_requests SET status = 'submitted', claimed_by = '', claim_expires_at = NULL, updated_at = ? WHERE id = ?`, ts, id)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	for aid := range seen {
-		s.syncSidecar(ctx, aid)
-	}
-	return s.GetRequest(ctx, id)
-}
-
-// ---- reviewing submissions ----
-
-// AcceptSubmission picks a candidate as the result of a request.
-//
-// The candidate becomes approved, the request done. The other candidates
-// still waiting are marked "not chosen" (verdict rejected, no note); their
-// assets are left untouched so nothing is lost, and can be trashed by hand.
-// With supersede, the asset the request replaces (the rework target, or the
-// placeholder) becomes superseded with superseded_by pointing at the
-// candidate, its project usage (with notes) moves to the candidate, its
-// collection memberships are copied (the old asset keeps them), and open
-// rework notes on the old asset are resolved. Without supersede the old asset
-// is left as it is. The request's own project always gets the candidate.
-func (s *Service) AcceptSubmission(ctx context.Context, requestID, assetID string, supersede bool) (*Request, error) {
-	var old string
-	err := s.tx(ctx, func(tx *sql.Tx) error {
-		r, err := loadRequestTx(ctx, tx, requestID)
-		if err != nil {
-			return err
-		}
-		if err := requestFinished(r); err != nil {
-			return err
-		}
-		var verdict string
-		var deleted sql.NullString
-		err = tx.QueryRowContext(ctx, `SELECT s.verdict, a.deleted_at FROM request_submissions s JOIN assets a ON a.id = s.asset_id
-			WHERE s.request_id = ? AND s.asset_id = ?`, requestID, assetID).Scan(&verdict, &deleted)
-		if errors.Is(err, sql.ErrNoRows) {
-			return invalid("asset %s was not submitted for request %s", assetID, requestID)
-		}
-		if err != nil {
-			return err
-		}
-		if deleted.Valid {
-			return invalid("asset %s is in the trash; restore it first", assetID)
-		}
-		ts := now()
-		if _, err := tx.ExecContext(ctx, `UPDATE request_submissions SET verdict = 'accepted' WHERE request_id = ? AND asset_id = ?`, requestID, assetID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE request_submissions SET verdict = 'rejected' WHERE request_id = ? AND asset_id <> ? AND verdict = ''`, requestID, assetID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE assets SET status = 'approved', updated_at = ? WHERE id = ?`, ts, assetID); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE asset_requests SET status = 'done', accepted_asset_id = ?, claimed_by = '', claim_expires_at = NULL,
-			updated_at = ?, closed_at = ? WHERE id = ?`, assetID, ts, ts, requestID); err != nil {
-			return err
-		}
-		old = r.TargetAssetID
-		if old == "" {
-			old = r.PlaceholderAssetID
-		}
-		if old == assetID {
-			old = ""
-		}
-		if supersede && old != "" {
-			if err := supersedeAsset(ctx, tx, old, assetID, ts); err != nil {
-				return err
-			}
-		} else {
-			old = ""
-		}
-		if r.ProjectID != "" {
-			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO project_assets(project_id, asset_id, note, added_at) VALUES(?, ?, '', ?)`,
-				r.ProjectID, assetID, ts); err != nil {
-				return err
-			}
-		}
-		s.record(ctx, tx, "request.accept", assetID, requestID, r.Title)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	s.syncSidecar(ctx, assetID)
-	if old != "" {
-		s.syncSidecar(ctx, old)
-	}
-	return s.GetRequest(ctx, requestID)
-}
-
-// supersedeAsset marks old as replaced by repl and moves its usage over.
-func supersedeAsset(ctx context.Context, tx *sql.Tx, old, repl, ts string) error {
-	for _, q := range []string{
-		`UPDATE assets SET status = 'superseded', superseded_by = ?1, updated_at = ?3 WHERE id = ?2`,
-		// Project usage moves, notes included: reports and repository sync must see the new asset.
-		`INSERT INTO project_assets(project_id, asset_id, note, added_at)
-			SELECT project_id, ?1, note, added_at FROM project_assets WHERE asset_id = ?2
-			ON CONFLICT(project_id, asset_id) DO UPDATE SET note = CASE WHEN excluded.note = '' THEN note ELSE excluded.note END`,
-		`DELETE FROM project_assets WHERE asset_id = ?2`,
-		// Collections are copied; the superseded asset stays in them as history.
-		`INSERT OR IGNORE INTO collection_assets(collection_id, asset_id, added_at)
-			SELECT collection_id, ?1, ?3 FROM collection_assets WHERE asset_id = ?2`,
-		// The feedback has been dealt with.
-		`UPDATE asset_notes SET resolved_at = ?3 WHERE asset_id = ?2 AND kind = 'rework' AND resolved_at IS NULL`,
-	} {
-		if _, err := tx.ExecContext(ctx, q, repl, old, ts); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// RejectSubmission turns a candidate down. The feedback is stored as a rework
-// note on the candidate and shown to the next generator that claims the
-// request. The candidate becomes rejected. The request goes back to open
-// (claim cleared) unless other candidates are still waiting for review.
-func (s *Service) RejectSubmission(ctx context.Context, requestID, assetID, feedback string) (*Request, error) {
-	feedback, err := cleanNoteBody(feedback, true)
-	if err != nil {
-		return nil, invalid("say what is wrong: feedback must not be empty")
-	}
-	err = s.tx(ctx, func(tx *sql.Tx) error {
-		r, err := loadRequestTx(ctx, tx, requestID)
-		if err != nil {
-			return err
-		}
-		if err := requestFinished(r); err != nil {
-			return err
-		}
-		res, err := tx.ExecContext(ctx, `UPDATE request_submissions SET verdict = 'rejected' WHERE request_id = ? AND asset_id = ?`, requestID, assetID)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return invalid("asset %s was not submitted for request %s", assetID, requestID)
-		}
-		ts := now()
-		if _, err := tx.ExecContext(ctx, `UPDATE assets SET status = 'rejected', updated_at = ? WHERE id = ?`, ts, assetID); err != nil {
-			return err
-		}
-		if _, err := insertNote(ctx, tx, assetID, "rework", feedback, ActorFrom(ctx).String()); err != nil {
-			return err
-		}
-		var pending int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM request_submissions WHERE request_id = ? AND verdict = ''`, requestID).Scan(&pending); err != nil {
-			return err
-		}
-		if pending == 0 {
-			if _, err := tx.ExecContext(ctx, `UPDATE asset_requests SET status = 'open', claimed_by = '', claim_expires_at = NULL, updated_at = ? WHERE id = ?`, ts, requestID); err != nil {
-				return err
-			}
-		}
-		s.record(ctx, tx, "request.reject", assetID, requestID, feedback)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	s.syncSidecar(ctx, assetID)
-	return s.GetRequest(ctx, requestID)
 }

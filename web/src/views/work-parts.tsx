@@ -5,7 +5,7 @@ import { workApi } from '../lib/api-work'
 import { togglePreview, useNowPlaying } from '../lib/audio'
 import { getMeta, toastError, typeLabel, useQuery } from '../lib/store'
 import {
-  PLACEHOLDER_AUDIO_TYPES, PLACEHOLDER_IMAGE_TYPES, PRIORITIES, canPlaceholder, type RequestInput, type Submission, type WorkRequest,
+  DESCRIPTION_MAX_BYTES, NOTE_MAX_BYTES, PLACEHOLDER_AUDIO_TYPES, PLACEHOLDER_IMAGE_TYPES, PRIORITIES, byteLength, canPlaceholder, type RequestInput, type Submission, type WorkRequest,
 } from '../lib/types-work'
 import { Button, Check, Dialog, Field, typeColor, typeIcon } from '../ui'
 
@@ -63,7 +63,7 @@ export function FeedbackDialog({
   const [priority, setPriority] = useState(0)
   const [busy, setBusy] = useState(false)
   const submit = async () => {
-    if (!text.trim()) return
+    if (!text.trim() || byteLength(text) > NOTE_MAX_BYTES) return
     setBusy(true)
     try {
       await onSubmit(text.trim(), priority)
@@ -82,7 +82,7 @@ export function FeedbackDialog({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant={danger ? 'danger' : 'primary'} busy={busy} disabled={!text.trim()} onClick={submit}>
+          <Button variant={danger ? 'danger' : 'primary'} busy={busy} disabled={!text.trim() || byteLength(text) > NOTE_MAX_BYTES} onClick={submit}>
             {confirmLabel}
           </Button>
         </>
@@ -90,12 +90,11 @@ export function FeedbackDialog({
     >
       <div className="stack">
         {intro && <p className="muted">{intro}</p>}
-        <Field label={label}>
+        <Field label={label} hint={`${byteLength(text)} / ${NOTE_MAX_BYTES} bytes`} error={byteLength(text) > NOTE_MAX_BYTES ? 'Too long: shorten the text.' : undefined}>
           <textarea
             className="textarea"
             rows={4}
             autoFocus
-            maxLength={8000}
             value={text}
             placeholder={placeholder}
             onChange={(e) => setText(e.target.value)}
@@ -150,8 +149,9 @@ export function NewRequestDialog({
 
   const image = PLACEHOLDER_IMAGE_TYPES.includes(type) || ['model', 'animation', 'video', 'font'].includes(type)
   const audio = PLACEHOLDER_AUDIO_TYPES.includes(type) || type === 'video' || type === 'animation'
+  const tooLong = byteLength(description) > DESCRIPTION_MAX_BYTES
   const submit = async () => {
-    if (!title.trim()) return
+    if (!title.trim() || tooLong) return
     const spec: Record<string, unknown> = {}
     if (image && num(width)) spec.width = num(width)
     if (image && num(height)) spec.height = num(height)
@@ -180,7 +180,7 @@ export function NewRequestDialog({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" busy={busy} disabled={!title.trim()} onClick={submit}>
+          <Button variant="primary" busy={busy} disabled={!title.trim() || tooLong} onClick={submit}>
             Create request
           </Button>
         </>
@@ -191,7 +191,7 @@ export function NewRequestDialog({
         <Field label="Title">
           <input className="input" autoFocus maxLength={300} value={title} placeholder="Gold coin, spinning" onChange={(e) => setTitle(e.target.value)} />
         </Field>
-        <Field label="Description" hint="What it shows or sounds like, mood, where the game uses it.">
+        <Field label="Description" hint="What it shows or sounds like, mood, where the game uses it." error={tooLong ? `Too long (${byteLength(description)} of ${DESCRIPTION_MAX_BYTES} bytes).` : undefined}>
           <textarea className="textarea" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
         </Field>
         <div className="field-row">

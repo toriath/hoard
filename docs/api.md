@@ -115,6 +115,8 @@ The request queue for generator agents, steering of assets and notes. Requests: 
 | `POST /assets/{id}/notes` | `{ "body": "…", "kind": "comment" }` (`comment`, `rework`, `approval`, `rejection`; body at most 8 KiB) |
 | `POST /notes/{id}/resolve` | Mark a note as dealt with |
 
+Accepting or rejecting a submission needs a request in `submitted` and a candidate still pending (`409 conflict` otherwise). It is refused with `400` when the caller is the identity that submitted the candidate, unless the caller is a browser session. Reads never change state: a claim whose lease ran out is shown as `open` and settled by the next write.
+
 ## Signed links
 
 MCP tools hand out links that need no token and expire after two hours:

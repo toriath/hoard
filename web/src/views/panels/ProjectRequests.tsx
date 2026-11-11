@@ -26,7 +26,7 @@ export function ProjectRequestsPanel({ project }: { project: Project }) {
         <div className="grow">
           <h3>Asset requests</h3>
           <p className="faint">
-            {requests.data ? `${reqs.length} open` : 'Loading…'}
+            {requests.data ? `${reqs.length}${reqs.length >= 50 ? '+' : ''} unfinished` : 'Loading…'}
             {stand.length > 0 && ` · ${stand.length} placeholder${stand.length === 1 ? '' : 's'} still in use`}
           </p>
         </div>

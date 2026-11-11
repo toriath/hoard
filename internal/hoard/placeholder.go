@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
@@ -27,7 +28,7 @@ import (
 
 const (
 	placeholderDefaultSize = 64
-	placeholderMaxSize     = 4096
+	placeholderMaxSize     = 2048
 	placeholderDefaultSecs = 1.0
 	placeholderMaxSecs     = 30.0
 	placeholderRate        = 22050
@@ -37,6 +38,20 @@ var (
 	placeholderImageTypes = map[string]bool{"sprite": true, "ui": true, "tileset": true, "texture": true, "vfx": true}
 	placeholderAudioTypes = map[string]bool{"sfx": true, "music": true, "voice": true}
 )
+
+func finite(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) }
+
+// placeholderSem renders one placeholder at a time: a 2048x2048 image is 16 MB.
+var placeholderSem = make(chan struct{}, 1)
+
+// placeholderMu serialises MakePlaceholder per request (striped by id).
+var placeholderMu [64]sync.Mutex
+
+func placeholderLock(requestID string) *sync.Mutex {
+	h := fnv.New32a()
+	h.Write([]byte(requestID))
+	return &placeholderMu[h.Sum32()%uint32(len(placeholderMu))]
+}
 
 func placeholderSupported(assetType string) error {
 	t := strings.ToLower(strings.TrimSpace(assetType))
@@ -52,11 +67,13 @@ func wkSpecNumber(spec map[string]any, keys ...string) (float64, bool) {
 	for _, k := range keys {
 		switch v := spec[k].(type) {
 		case float64:
-			return v, true
+			if finite(v) {
+				return v, true
+			}
 		case int:
 			return float64(v), true
 		case string:
-			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && finite(f) {
 				return f, true
 			}
 		}
@@ -162,7 +179,7 @@ func placeholderPNG(title string, w, h, cellW, cellH int) ([]byte, error) {
 			img.SetNRGBA(x1-1, y, edge)
 		}
 	}
-	if cellW > 0 && cellH > 0 && (cellW < w || cellH < h) {
+	if cells := (w/max(cellW, 1) + 1) * (h/max(cellH, 1) + 1); cellW > 0 && cellH > 0 && (cellW < w || cellH < h) && cells <= 4096 {
 		for y := 0; y < h; y += cellH {
 			for x := 0; x < w; x += cellW {
 				box(x, y, min(x+cellW, w), min(y+cellH, h))
@@ -278,6 +295,9 @@ func placeholderFilename(spec map[string]any, title, ext string) string {
 // 30 s). If the request already has a live placeholder it is returned as is.
 // When the request is accepted the placeholder is superseded.
 func (s *Service) MakePlaceholder(ctx context.Context, requestID string) (*Asset, error) {
+	mu := placeholderLock(requestID)
+	mu.Lock()
+	defer mu.Unlock()
 	r, err := s.GetRequest(ctx, requestID)
 	if err != nil {
 		return nil, err
@@ -307,7 +327,10 @@ func (s *Service) MakePlaceholder(ctx context.Context, requestID string) (*Asset
 	}
 	if placeholderImageTypes[r.AssetType] {
 		w, h, cw, ch := placeholderSize(r.Spec)
-		if data, err = placeholderPNG(r.Title, w, h, cw, ch); err != nil {
+		placeholderSem <- struct{}{}
+		data, err = placeholderPNG(r.Title, w, h, cw, ch)
+		<-placeholderSem
+		if err != nil {
 			return nil, err
 		}
 		ext = ".png"
@@ -337,14 +360,34 @@ func (s *Service) MakePlaceholder(ctx context.Context, requestID string) (*Asset
 		_, _ = s.Bulk(context.WithoutCancel(ctx), BulkOp{IDs: []string{a.ID}, Action: "purge"})
 		return nil, err
 	}
+	var prev any
+	if r.PlaceholderAssetID != "" {
+		prev = r.PlaceholderAssetID
+	}
+	linked := false
 	err = s.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE asset_requests SET placeholder_asset_id = ?, updated_at = ? WHERE id = ?`, a.ID, now(), requestID); err != nil {
+		// Link only if nobody else did meanwhile.
+		res, err := tx.ExecContext(ctx, `UPDATE asset_requests SET placeholder_asset_id = ?, updated_at = ? WHERE id = ? AND placeholder_asset_id IS ?`,
+			a.ID, now(), requestID, prev)
+		if err != nil {
 			return err
 		}
-		s.record(ctx, tx, "request.placeholder", a.ID, requestID, r.Title)
+		if n, _ := res.RowsAffected(); n == 1 {
+			linked = true
+			s.record(ctx, tx, "request.placeholder", a.ID, requestID, r.Title)
+		}
 		return nil
 	})
+	if err == nil && !linked {
+		// Lost a race (should not happen under the lock): drop the orphan, return the winner.
+		_, _ = s.Bulk(context.WithoutCancel(ctx), BulkOp{IDs: []string{a.ID}, Action: "purge"})
+		if cur, gerr := s.GetRequest(ctx, requestID); gerr == nil && cur.PlaceholderAssetID != "" {
+			return s.GetAsset(ctx, cur.PlaceholderAssetID)
+		}
+		return nil, fmt.Errorf("link placeholder: request %s changed meanwhile: %w", requestID, ErrConflict)
+	}
 	if err != nil {
+		_, _ = s.Bulk(context.WithoutCancel(ctx), BulkOp{IDs: []string{a.ID}, Action: "purge"})
 		return nil, fmt.Errorf("link placeholder: %w", err)
 	}
 	return s.GetAsset(ctx, a.ID)

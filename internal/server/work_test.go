@@ -190,15 +190,20 @@ func TestMCPWorkLoop(t *testing.T) {
 		t.Cleanup(func() { s.Close() })
 		return s
 	}
+	var coder, gen *mcp.ClientSession
 	call := func(s *mcp.ClientSession, name string, args map[string]any) map[string]any {
 		t.Helper()
+		// Both agents share one token; the generator tells itself apart with a label.
+		if s == gen && (name == "claim_request" || name == "renew_claim" || name == "release_request" || name == "submit_request") {
+			args["agent"] = "gen"
+		}
 		res, err := s.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		return resultJSON(t, res)
 	}
-	coder, gen := connect(), connect()
+	coder, gen = connect(), connect()
 
 	// Tools and prompts are published with descriptions.
 	tl, _ := coder.ListTools(ctx, nil)
@@ -316,10 +321,24 @@ func TestMCPWorkLoop(t *testing.T) {
 	if res, _ := coder.CallTool(ctx, &mcp.CallToolParams{Name: "make_placeholder", Arguments: map[string]any{"request_id": rwReq["id"]}}); !res.IsError {
 		t.Error("placeholder for rework accepted")
 	}
+	// Self-review: an agent cannot judge what it submitted itself (same token, no label).
+	own := call(coder, "request_asset", map[string]any{"title": "Own work", "asset_type": "sprite"})["request"].(map[string]any)["id"].(string)
+	mine := call(coder, "create_asset", map[string]any{"name": "mine"})["asset"].(map[string]any)["id"].(string)
+	call(coder, "submit_request", map[string]any{"request_id": own, "asset_ids": []string{mine}})
+	if res, err := coder.CallTool(ctx, &mcp.CallToolParams{Name: "review_submission", Arguments: map[string]any{"request_id": own, "asset_id": mine, "decision": "accept"}}); err != nil || !res.IsError ||
+		!strings.Contains(res.Content[0].(*mcp.TextContent).Text, "cannot be reviewed by the agent that made it") {
+		t.Errorf("self review: %v %+v", err, res)
+	}
+	if res, _ := coder.CallTool(ctx, &mcp.CallToolParams{Name: "review_asset", Arguments: map[string]any{"asset_id": mine, "verdict": "approve"}}); !res.IsError {
+		t.Error("self approve accepted")
+	}
+	// ...but the generator label makes it another agent, and the user's browser session always may.
+	e.do("POST", "/api/v1/requests/"+own+"/submissions/"+mine+"/accept", ``, nil, http.StatusOK, nil)
+
 	// Everything was attributed to the token.
 	feed, _ := e.svc.ListActivity(ctx, hoard.ActivityQuery{Action: "request.", Limit: 50})
 	for _, a := range feed {
-		if a.Via != "mcp" && a.Action != "request.create" {
+		if a.Via != "mcp" && a.Action != "request.create" && a.Action != "request.accept" {
 			t.Errorf("activity %s via %s", a.Action, a.Via)
 		}
 	}

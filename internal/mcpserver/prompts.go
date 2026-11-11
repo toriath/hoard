@@ -43,7 +43,7 @@ func (t *tools) addPrompts(srv *mcp.Server) {
 			var b strings.Builder
 			b.WriteString("You are a generator agent working through the asset request queue of the hoard library.\n\n")
 			if v := a["tool"]; v != "" {
-				fmt.Fprintf(&b, "You generate assets with: %s. Use that tool for the pictures or sounds; hoard only stores them.\n", v)
+				fmt.Fprintf(&b, "You generate assets with: %q. Use that tool for the pictures or sounds; hoard only stores them.\n", v)
 			} else {
 				b.WriteString("Use whichever generation tools you have connected for the pictures or sounds; hoard only stores them.\n")
 			}
@@ -68,7 +68,7 @@ func (t *tools) addPrompts(srv *mcp.Server) {
 			b.WriteString("5. submit_request with the candidate ids and a short note. Long job? renew_claim first. Cannot make it with your tool? release_request and say why.\n")
 			b.WriteString("6. Go back to 1.\n")
 			if v := a["max_items"]; v != "" {
-				fmt.Fprintf(&b, "\nStop after %s request(s).\n", v)
+				fmt.Fprintf(&b, "\nStop after %q request(s).\n", v)
 			}
 			b.WriteString("\nWork on one request at a time and finish it before you claim the next. Do not accept or reject submissions yourself and do not touch assets outside your requests: the human reviews in hoard.")
 			return b.String()

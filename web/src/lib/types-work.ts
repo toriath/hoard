@@ -54,6 +54,8 @@ export interface WorkRequest {
   created_at: string
   updated_at: string
   closed_at?: string
+  /** Set on creation when a placeholder was asked for but could not be made. */
+  placeholder_error?: string
   submissions?: Submission[]
   notes?: Note[]
 }
@@ -103,6 +105,11 @@ export const PRIORITIES: { value: number; label: string }[] = [
 ]
 
 export const priorityLabel = (p: number) => PRIORITIES.find((x) => x.value === p)?.label ?? (p > 2 ? 'Urgent' : 'Low')
+
+/** Server limits on text, counted in UTF-8 bytes. */
+export const NOTE_MAX_BYTES = 8192
+export const DESCRIPTION_MAX_BYTES = 20000
+export const byteLength = (s: string) => new TextEncoder().encode(s).length
 
 /** Asset types for which hoard can generate a placeholder (PNG for the first group, WAV for the second). */
 export const PLACEHOLDER_IMAGE_TYPES = ['sprite', 'ui', 'tileset', 'texture', 'vfx']

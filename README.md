@@ -159,6 +159,10 @@ hoard can run a small work queue between the agents that build your game and the
 
 A claim is a lease (60 minutes by default, at most 24 hours). An agent that dies simply stops renewing it, and the request is open again.
 
+**Give each generator agent its own token (or an `agent` label).** hoard tells claimers apart by token owner and token name; agents sharing one token look like the same claimer unless they pass the optional `agent` label to `claim_request`, `renew_claim`, `release_request` and `submit_request`.
+
+**Nobody reviews their own work.** hoard refuses to accept or reject a submission, or to approve or reject an asset that is still under review, when the caller is the identity that submitted it ("a submission cannot be reviewed by the agent that made it; ask the user"). The browser session, the user, can always review; so can a different agent when you ask your coding agent to. Superseded assets are reviewed through their replacement, and placeholders cannot be approved: they are replaced by accepting a submission.
+
 ### Setting up a generator agent
 
 Give a second agent the hoard MCP server and the tools that make the assets. In Claude Code, the prompt `work-request-queue` is available as a slash command; its arguments say what you generate with and what types of request to take:

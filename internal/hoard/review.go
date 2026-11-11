@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Steering: a person (or a reviewing agent) judges an asset. Approve and
@@ -58,6 +59,9 @@ func (s *Service) setVerdict(ctx context.Context, assetID, status, noteKind, tex
 		if err := reviewable(ctx, tx, assetID); err != nil {
 			return err
 		}
+		if err := reviewGuard(ctx, tx, assetID, status); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE assets SET status = ?, updated_at = ? WHERE id = ?`, status, now(), assetID); err != nil {
 			return err
 		}
@@ -99,29 +103,51 @@ var reworkSpecKeys = []string{"frame_width", "frame_height", "frames", "columns"
 	"duration_s", "sample_rate", "channels", "bit_depth", "bpm"}
 
 // reworkSpec describes the asset to redo, so that a generator can work from
-// the request alone: type, size, duration, prompt and recipe.
+// the request alone: type, size, duration, prompt and recipe. Every copied
+// value is capped, oversized attributes (a long `animations` table, say) are
+// left out, so the spec always fits the limit.
 func reworkSpec(a *Asset) map[string]any {
 	spec := map[string]any{"type": a.Type, "rework_of": a.ID}
 	if p := a.Primary(); p != nil {
-		spec["filename"] = p.Filename
+		spec["filename"] = wkTruncBytes(p.Filename, 180)
 		if p.Width > 0 {
 			spec["width"], spec["height"] = p.Width, p.Height
 		}
 	}
 	for _, k := range reworkSpecKeys {
 		if v, ok := a.Attrs[k]; ok {
-			spec[k] = v
+			if b, err := json.Marshal(v); err == nil && len(b) <= 512 {
+				spec[k] = v
+			}
 		}
 	}
 	if a.Prompt != "" {
-		spec["prompt"] = wkTruncate(a.Prompt, 4000)
+		spec["prompt"] = wkTruncBytes(a.Prompt, 3000)
 	}
 	if len(a.Generator) > 0 {
-		if b, err := json.Marshal(a.Generator); err == nil && len(b) <= 6<<10 {
+		if b, err := json.Marshal(a.Generator); err == nil && len(b) <= 4<<10 {
 			spec["generator"] = a.Generator
 		}
 	}
+	for _, drop := range []string{"", "generator", "prompt"} {
+		delete(spec, drop)
+		if b, err := json.Marshal(spec); err == nil && len(b) <= maxSpecBytes {
+			break
+		}
+	}
 	return spec
+}
+
+// wkTruncBytes cuts s to at most n bytes without splitting a character.
+func wkTruncBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s + "…"
 }
 
 func wkTruncate(s string, n int) string {
@@ -155,6 +181,9 @@ func (s *Service) MarkForRework(ctx context.Context, assetID, feedback string, p
 	var reqID string
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		if err := reviewable(ctx, tx, assetID); err != nil {
+			return err
+		}
+		if err := reviewGuard(ctx, tx, assetID, "rework"); err != nil {
 			return err
 		}
 		ts := now()

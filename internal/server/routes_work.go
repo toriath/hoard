@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -113,7 +114,12 @@ func optionalJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	if r.ContentLength == 0 {
 		return nil
 	}
-	return readJSONLimit(w, r, v, 64<<10)
+	err := readJSONLimit(w, r, v, 64<<10)
+	var ae *apiError
+	if errors.As(err, &ae) && ae.Message == "request body is empty" {
+		return nil // chunked and empty
+	}
+	return err
 }
 
 func (s *Server) handleClaimRequest(w http.ResponseWriter, r *http.Request) error {

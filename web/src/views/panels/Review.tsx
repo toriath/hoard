@@ -5,7 +5,7 @@ import { api } from '../../lib/api'
 import { link, useLocation } from '../../lib/router'
 import { workApi } from '../../lib/api-work'
 import { changed, toast, toastError, useQuery, useVersion } from '../../lib/store'
-import type { Note, WorkRequest } from '../../lib/types-work'
+import { NOTE_MAX_BYTES, byteLength, type Note, type WorkRequest } from '../../lib/types-work'
 import { Button, Chip } from '../../ui'
 import { RequestBadge, StatusBadge } from '../../ui/status'
 import { FeedbackDialog } from '../work-parts'
@@ -34,10 +34,8 @@ export function ReviewPanel({ asset, onChange }: AssetPanelProps) {
       setBusy('')
     }
   }
-  const refresh = () => {
-    changed('assets')
-    state.reload()
-  }
+  // Bumping the version refetches the review state once (it is part of the query key).
+  const refresh = () => changed('assets')
 
   const approve = () =>
     run('approve', async () => {
@@ -109,7 +107,8 @@ export function ReviewPanel({ asset, onChange }: AssetPanelProps) {
         </div>
       ))}
 
-      {!trashed && (
+      {/* Superseded assets are reviewed through their replacement; placeholders are replaced by accepting a submission. */}
+      {!trashed && asset.status !== 'superseded' && asset.status !== 'placeholder' && (
         <div className="row-wrap review-actions">
           <Button size="sm" icon={ThumbsUp} onClick={approve} busy={busy === 'approve'} disabled={asset.status === 'approved'}>
             Approve
@@ -156,7 +155,6 @@ export function ReviewPanel({ asset, onChange }: AssetPanelProps) {
           <textarea
             className="textarea"
             rows={2}
-            maxLength={8000}
             aria-label="Add a comment"
             placeholder="Add a comment…"
             value={comment}
@@ -165,7 +163,12 @@ export function ReviewPanel({ asset, onChange }: AssetPanelProps) {
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && comment.trim()) void post()
             }}
           />
-          <Button size="sm" icon={MessageSquare} disabled={!comment.trim()} busy={busy === 'comment'} onClick={post}>
+          {byteLength(comment) > NOTE_MAX_BYTES * 0.8 && (
+            <span className={byteLength(comment) > NOTE_MAX_BYTES ? 'error' : 'faint'}>
+              {byteLength(comment)} / {NOTE_MAX_BYTES} bytes
+            </span>
+          )}
+          <Button size="sm" icon={MessageSquare} disabled={!comment.trim() || byteLength(comment) > NOTE_MAX_BYTES} busy={busy === 'comment'} onClick={post}>
             Comment
           </Button>
         </div>

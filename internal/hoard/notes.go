@@ -39,6 +39,13 @@ func scanNote(row scanner) (*Note, error) {
 const noteCols = `id, asset_id, kind, body, author, created_at, resolved_at`
 
 func insertNote(ctx context.Context, tx *sql.Tx, assetID, kind, body, author string) (*Note, error) {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_notes WHERE asset_id = ?`, assetID).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count >= maxNotesPerAsset {
+		return nil, capErr("notes on one asset", maxNotesPerAsset)
+	}
 	n := &Note{ID: newID("not"), AssetID: assetID, Kind: kind, Body: body, Author: author, CreatedAt: now()}
 	_, err := tx.ExecContext(ctx, `INSERT INTO asset_notes(id, asset_id, kind, body, author, created_at) VALUES(?, ?, ?, ?, ?, ?)`,
 		n.ID, n.AssetID, n.Kind, n.Body, n.Author, n.CreatedAt)

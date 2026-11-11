@@ -258,7 +258,7 @@ func TestAcceptWithoutSupersedeAndNotChosen(t *testing.T) {
 	if _, err := s.SubmitRequest(ctx, r.ID, []string{a.ID, b.ID, a.ID}, ""); err != nil {
 		t.Fatal(err)
 	}
-	r, err := s.AcceptSubmission(ctx, r.ID, b.ID, false)
+	r, err := s.AcceptSubmission(webCtx(), r.ID, b.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,15 +317,15 @@ func TestRejectSubmissionReopens(t *testing.T) {
 	if _, err := s.SubmitRequest(gen, r.ID, []string{cand.ID}, "fixed"); err != nil {
 		t.Fatal(err)
 	}
-	if c, _ := s.GetAsset(ctx, cand.ID); c.Status != "draft" {
-		t.Errorf("resubmitted status = %q", c.Status)
+	if c, _ := s.GetAsset(ctx, cand.ID); c.Status != "rejected" {
+		t.Errorf("resubmitting must not override a review status, got %q", c.Status)
 	}
 	// With two candidates pending, rejecting one leaves the request in review.
 	other := mustAsset(t, s, AssetInput{Name: ptr("slime v2")}, "", nil)
 	if _, err := s.SubmitRequest(ctx, r.ID, []string{other.ID}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ = s.RejectSubmission(ctx, r.ID, other.ID, "no"); r.Status != "submitted" {
+	if r, _ = s.RejectSubmission(webCtx(), r.ID, other.ID, "no"); r == nil || r.Status != "submitted" {
 		t.Errorf("request with another pending candidate is %q", r.Status)
 	}
 }
@@ -537,7 +537,7 @@ func TestPlaceholderFiles(t *testing.T) {
 	}
 
 	big, _ := s.CreateRequest(ctx, RequestInput{Title: "Huge", AssetType: "texture", Spec: map[string]any{"width": 100000.0, "height": "20"}})
-	if w, h, _, _ := placeholderSize(big.Spec); w != 4096 || h != 20 {
+	if w, h, _, _ := placeholderSize(big.Spec); w != 2048 || h != 20 {
 		t.Errorf("size = %dx%d", w, h)
 	}
 	if w, h, _, _ := placeholderSize(nil); w != 64 || h != 64 {

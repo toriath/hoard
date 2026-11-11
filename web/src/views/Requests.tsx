@@ -1,5 +1,5 @@
 import { Check, ClipboardList, Ellipsis, Plus, RotateCcw, Wand2, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
 import { workApi } from '../lib/api-work'
 import { timeAgo } from '../lib/format'
@@ -34,13 +34,14 @@ export function RequestsPage() {
     [project, type, kind, version],
   )
   // Agents work in the background: look again now and then, and when the tab returns.
-  const { reload: reloadActive } = active
-  const { reload: reloadDone } = done
+  // The reloaders live in a ref so that the timer is set up once, not on every render.
+  const reloaders = useRef({ active: active.reload, done: done.reload })
+  reloaders.current = { active: active.reload, done: done.reload }
   useEffect(() => {
     const again = () => {
       if (document.visibilityState === 'visible') {
-        reloadActive()
-        reloadDone()
+        reloaders.current.active()
+        reloaders.current.done()
       }
     }
     const t = setInterval(again, POLL_MS)
@@ -49,7 +50,7 @@ export function RequestsPage() {
       clearInterval(t)
       document.removeEventListener('visibilitychange', again)
     }
-  }, [reloadActive, reloadDone])
+  }, [])
 
   const reload = () => {
     changed('assets')
@@ -149,7 +150,8 @@ export function RequestsPage() {
         <NewRequestDialog
           onClose={() => setCreating(false)}
           onCreated={(r) => {
-            toast(r.placeholder_asset_id ? 'Request created with a placeholder' : 'Request created')
+            if (r.placeholder_error) toastError(new Error('Request created, but the placeholder failed: ' + r.placeholder_error))
+            else toast(r.placeholder_asset_id ? 'Request created with a placeholder' : 'Request created')
             reload()
           }}
         />
