@@ -1205,7 +1205,11 @@ img.pixel {
     background: color-mix(in srgb, var(--surface-1) 92%, transparent);
     backdrop-filter: blur(12px);
   }
-  .bottomnav a {
+  .bottomnav > span {
+    display: flex;
+  }
+  .bottomnav a,
+  .bottomnav button {
     display: grid;
     place-content: center;
     justify-items: center;
@@ -1214,10 +1218,19 @@ img.pixel {
     font-size: 10px;
     font-weight: var(--fw-medium);
   }
+  .bottomnav button {
+    flex: 1;
+    border: 0;
+    background: none;
+    font-family: inherit;
+    cursor: pointer;
+  }
   .bottomnav a:hover {
     text-decoration: none;
   }
-  .bottomnav a[aria-current='page'] {
+  .bottomnav a[aria-current='page'],
+  .bottomnav button[aria-current='page'],
+  .bottomnav button[aria-expanded='true'] {
     color: var(--accent);
   }
   .bottomnav svg {
