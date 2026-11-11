@@ -187,7 +187,7 @@ Everything is below the `/data` volume:
 └── tmp/                     uploads in flight
 ```
 
-A ZFS snapshot of the dataset is a complete backup. The sidecars are a safety net and a way to use the library without hoard: if the index were lost, every asset would still be there with its metadata, but hoard does not rebuild the index from them, and accounts, tokens and settings live only in the index.
+A ZFS snapshot of the dataset is a complete backup. The sidecars are a safety net and a way to use the library without hoard: if the index were lost, every asset would still be there with its metadata. If `hoard.db` is missing (or holds no assets) while `assets/*/asset.json` files exist, hoard imports them in the background at startup: assets with their ids, times, status, lineage, generator, attributes and tags, the files that are really on disk (size and SHA-256 are recomputed from the file, not taken from the sidecar), and the collections and projects they name. Asset requests, notes, the activity feed, the project brief and repository snapshots are not in the sidecars and are not restored. Accounts, API tokens and settings live only in the index, so after a rebuild you set up the first account again and create new tokens. Sidecars that cannot be read are skipped with a warning in the log, and symbolic links are never followed.
 
 ## Configuration
 
