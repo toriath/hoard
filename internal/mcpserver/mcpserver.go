@@ -33,6 +33,7 @@ const instructions = `hoard is the user's self-hosted game-asset library: sprite
 
 Typical workflows:
 - Find assets: call search_assets (full-text over names, tags, descriptions, prompts and file names; filter by type, tags, collection, project). Call hoard_overview first if you need the tag vocabulary or the ids of collections and projects.
+- Let the user choose: call show_assets with a shortlist (ids) or filters. Clients with interactive views show a gallery with previews and audio playback, and the user's pick comes back as a message listing asset ids.
 - Use an asset in a game project: get_download_commands returns curl commands that fetch the files; run them in the shell, then record the usage with bulk_update_assets (add_project_ids + project_note).
 - Store a new asset (e.g. one you just generated): call create_asset with complete metadata, always including the generation prompt, source and license when known, plus the filenames you will upload. It returns one curl command per file; run them to upload. Small text files such as shaders can be passed inline via text_files instead.
 - Keep metadata tidy: reuse existing tags (lowercase kebab-case), prefer SPDX license ids such as CC0-1.0 or CC-BY-4.0.
@@ -119,6 +120,7 @@ func NewHandler(svc *hoard.Service, agent *ai.Agent, version string, maxFileByte
 	mcp.AddTool(srv, &mcp.Tool{Name: "analyze_assets", Annotations: add,
 		Description: "Run hoard's built-in AI agent to describe and tag assets from their preview and files. With one id it runs immediately and returns the result; with several it queues them in the background. By default only gaps are filled (tags merged, empty description set, auto-derived names replaced); set `overwrite` to replace existing name, description and type. Requires an AI provider configured in the hoard settings. As a capable agent you can often do better yourself: view_asset, then update_asset."},
 		t.analyze)
+	t.addGallery(srv)
 
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})

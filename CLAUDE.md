@@ -15,7 +15,7 @@ Self-hosted game-asset database: Go server (SQLite, REST, MCP) with an embedded 
 
 - `internal/hoard`: the core Service. All business rules live here; REST and MCP are thin wrappers. Add a capability here first, then expose it in `internal/server` and `internal/mcpserver`.
 - `internal/server`: HTTP routing, sessions, file delivery. `server.go` holds middleware and auth, `assets.go` the handlers.
-- `internal/mcpserver`: one file. Tool descriptions are the product for agents: keep them accurate when behaviour changes.
+- `internal/mcpserver`: `mcpserver.go` holds the tools; tool descriptions are the product for agents, so keep them accurate when behaviour changes. `gallery.go` and `gallery.html` are the interactive gallery behind `show_assets` (an MCP App): one hand-written HTML file without a build step, embedded into the binary and speaking JSON-RPC over `postMessage` with the client.
 - `internal/ai`: the metadata agent. `providers.go` talks to the Claude API (official Go SDK) and OpenAI-compatible servers (LM Studio).
 - `web/src`: `ui/` is the design system (use these primitives, do not restyle ad hoc), `views/` the pages, `preview/` and `lib/thumbs.ts` the media previews. The bundle is emitted to `dist/static`, because `/assets/<id>` is a page of the app.
 - `scripts/`: `next-version.sh` (version from Conventional Commits) with its tests, `build-release.sh`, `third-party-notices.sh`.
@@ -43,6 +43,7 @@ These came out of a security review. Do not weaken them without a reason written
 - Sign-in attempts are counted before the password is checked (`limiter.take`), so parallel attempts cannot outrun the throttle. Credential request bodies are capped at 8 KiB and all JSON bodies have a read deadline.
 - Signed links are bound to one asset and one file name, and uploads to trashed assets are refused.
 - Images are decoded for thumbnails only within `maxDecodedBytes`, one at a time.
+- The `show_assets` gallery runs inside the client's conversation. It builds its DOM from text nodes only, loads nothing over the network (so its resource declares no CSP domains), accepts only allow-listed image and audio types for `data:` URLs, and sends nothing but validated asset ids back into the conversation: an asset name must never become part of a user message. `TestGalleryViewIsSelfContained` guards this.
 - User files are served with a fixed content type, `nosniff` and a sandboxing CSP. The app's own CSP allows only its origin plus `data:`/`blob:` for images and fetches (needed by the 3D loaders).
 - `hoard.db` and its backups are mode 0600: they hold password hashes, the link-signing key and possibly the AI key.
 
@@ -50,7 +51,7 @@ These came out of a security review. Do not weaken them without a reason written
 
 Covered by tests or checked in a real deployment: the web UI, MCP from a real client including uploads over signed links, the container on TrueNAS SCALE, access through a reverse proxy.
 
-Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the release half of `ci.yml` after its rework. Do not describe these as working.
+Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Do not describe these as working.
 
 ## Known gaps
 
@@ -63,6 +64,7 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - Mutations of one asset are not serialised beyond the sidecar write. Two concurrent edits are both applied; the sidecar reflects the later one.
 - Uploading a folder flattens it: relative paths are not kept, so files with the same name in one asset replace each other.
 - Rendering a preview in the browser also updates technical attributes, which bumps the asset's "changed" time.
+- The `show_assets` gallery plays only audio files up to 2 MiB and shows thumbnails only; video, 3D and larger audio need the web UI. It is stateless: reopening a conversation starts with nothing ticked.
 - The waveform cannot be scrubbed from the keyboard. There is no frontend test suite.
 - The image job has registry write permission also on pull requests from branches of this repository (forks and Dependabot get a read-only token).
 
