@@ -18,6 +18,7 @@ A self-hosted database for game assets: sprites, 3D models, textures, SFX, music
 - [Install on TrueNAS SCALE](#install-on-truenas-scale)
 - [Reach it over your tailnet](#reach-it-over-your-tailnet)
 - [Connect Claude (MCP)](#connect-claude-mcp)
+- [History, recipes and tags](#history-recipes-and-tags)
 - [The built-in AI agent](#the-built-in-ai-agent)
 - [What an asset holds](#what-an-asset-holds)
 - [Where your data lives](#where-your-data-lives)
@@ -142,10 +143,19 @@ Metadata travels through tool calls. Binary files do not pass through the model:
 | `list_collections` / `save_collection` / `delete_collection` | Packs, styles and other groups |
 | `list_projects` / `save_project` / `delete_project` | Projects that assets are used in |
 | `analyze_assets` | Run the built-in AI agent |
+| `recent_changes` | What changed since a time or a sequence number: who did what to which asset, so an agent resuming work sees what people and other agents did. Returns `latest_seq` for polling with `after_seq` |
+| `get_recipe` | Prompt, generator recipe and `derived_from` chain of an asset, with a hint on how to regenerate or vary it |
 
 `asset_media` also exists; the gallery uses it to play audio and it is of no use to an agent.
 
 The same token works for the REST API under `/api/v1`; see [`docs/api.md`](docs/api.md).
+
+## History, recipes and tags
+
+- **Activity.** Every change to an asset, request, review, note or project is recorded with who made it (a person in the web UI, a script with an API token, an agent over MCP). The **Activity** page groups the feed by day, filters by kind and by people or agents, refreshes every 30 seconds and links to the assets. The drawer of an asset has a collapsed *History* section with its last ten changes. Entries older than 365 days are removed by the daily maintenance. Agents read the same feed with `recent_changes`.
+- **Lineage and recipes.** An asset can record the asset it was made from (`derived_from`) and a structured generator recipe (tool, model, seed, steps, cfg, size, negative prompt…). The drawer shows the recipe with copy buttons for prompt and seed, plus the parent, variations and replacements as thumbnails. `get_recipe` gives an agent the same, with a hint on how to reproduce the asset or make a variation.
+- **Generator metadata import.** When a file is added, hoard looks for the recipe the generator left behind and fills prompt and recipe where they are still empty (never overwriting what is there): Automatic1111 / Forge `parameters` text and ComfyUI `prompt`/`workflow` chunks in PNG files, Draw Things metadata (see the caveat in `CLAUDE.md`), and the `.json` sidecar that audio-studio writes next to a sound file. Failures are ignored; an upload never fails because of this. An imported recipe shows up in the activity feed as *generator metadata imported*.
+- **Tags.** The **Tags** page lists all tags with counts, searches and sorts them, renames them (asking before merging into an existing tag), deletes them, merges several selected tags into one and opens the library filtered by a tag.
 
 ## The built-in AI agent
 
@@ -163,7 +173,7 @@ Audio, video, fonts and 3D models get their preview (waveform, frame, specimen, 
 | ID | Stable, short, URL-safe: `ast_7k2m9q4x1c8v` |
 | Name, description | Free text |
 | Type | sprite, tileset, ui, texture, model, animation, vfx, shader, sfx, music, voice, video, font, other. Guessed from the first file, always editable |
-| Tags | Lowercase kebab-case, with autocomplete in the web UI; rename and merge over MCP and REST |
+| Tags | Lowercase kebab-case, with autocomplete in the web UI; rename and merge on the Tags page, over MCP and REST |
 | Prompt | The prompt the asset was generated with |
 | Source, source URL | Generator, marketplace, artist |
 | License, license URL, attribution | SPDX ids suggested, free text allowed |

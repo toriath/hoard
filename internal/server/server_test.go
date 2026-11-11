@@ -271,7 +271,7 @@ func TestMCP(t *testing.T) {
 		} `json:"tools"`
 	}
 	mcpCall(e, "tools/list", map[string]any{}, &tools)
-	if len(tools.Tools) != 22 {
+	if len(tools.Tools) != 24 {
 		t.Errorf("%d tools", len(tools.Tools))
 	}
 

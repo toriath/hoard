@@ -212,6 +212,7 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 			s.log.Debug("thumbnail", "asset", assetID, "file", filename, "err", err)
 		}
 	}
+	s.afterFileAdded(ctx, assetID, f, dst) // generator metadata import (genmeta.go)
 	s.syncSidecar(ctx, assetID)
 	return res, nil
 }
