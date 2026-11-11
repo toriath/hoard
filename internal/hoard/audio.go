@@ -2,6 +2,7 @@ package hoard
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/go-mp3"
-	"github.com/jfreymuth/oggvorbis"
 	"github.com/mewkiz/flac"
 )
 
@@ -32,6 +32,9 @@ const (
 	peakBlockFrames = 64
 	waveBars        = 72 // bars in the waveform, as in the web UI
 	maxPreviewTime  = 30 * time.Second
+	// maxPreviewFileBytes: larger audio files are not analysed on the server
+	// (the MP3 decoder scans the whole file to learn its length).
+	maxPreviewFileBytes = 64 << 20
 )
 
 // audioPreview lists the extensions decoded on the server.
@@ -45,6 +48,7 @@ type audioInfo struct {
 	BitDepth   int // 0 when not a property of the file (lossy formats)
 	Peak       float64
 	Complete   bool // the whole file was decoded (Peak is the true peak)
+	noWaveform bool // only the header was read; there are no peaks to draw
 	peaks      []float32
 }
 
@@ -122,17 +126,47 @@ func analyzeAudio(ctx context.Context, path, extension string) (info *audioInfo,
 		return nil, err
 	}
 	defer fh.Close()
+	st, err := fh.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if st.Size() > maxPreviewFileBytes {
+		return nil, fmt.Errorf("audio file of %d bytes is too large to analyse on the server", st.Size())
+	}
+	// Every read checks the context, so a decoder that scans the file or
+	// loops over it stops when the time budget is used up.
+	cf := &ctxFile{ctx: ctx, f: fh}
 	switch extension {
 	case ".wav":
-		return analyzeWAV(ctx, fh)
+		return analyzeWAV(ctx, cf, st.Size())
 	case ".mp3":
-		return analyzeMP3(ctx, fh)
+		return analyzeMP3(ctx, cf)
 	case ".ogg", ".oga":
-		return analyzeOgg(ctx, fh)
+		return analyzeOgg(fh, st.Size())
 	case ".flac":
-		return analyzeFLAC(ctx, fh)
+		return analyzeFLAC(ctx, cf)
 	}
 	return nil, fmt.Errorf("no decoder for %s", extension)
+}
+
+// ctxFile is a ReadSeeker over a file that fails once its context is done.
+type ctxFile struct {
+	ctx context.Context
+	f   *os.File
+}
+
+func (c *ctxFile) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.f.Read(p)
+}
+
+func (c *ctxFile) Seek(off int64, whence int) (int64, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.f.Seek(off, whence)
 }
 
 func finishInfo(c *peakCollector, info *audioInfo, capped bool) *audioInfo {
@@ -145,11 +179,7 @@ func finishInfo(c *peakCollector, info *audioInfo, capped bool) *audioInfo {
 
 // ---- WAV ----
 
-func analyzeWAV(ctx context.Context, fh *os.File) (*audioInfo, error) {
-	st, err := fh.Stat()
-	if err != nil {
-		return nil, err
-	}
+func analyzeWAV(ctx context.Context, fh io.Reader, fileSize int64) (*audioInfo, error) {
 	r := bufio.NewReaderSize(fh, 64<<10)
 	var hdr [12]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -198,7 +228,7 @@ func analyzeWAV(ctx context.Context, fh *os.File) (*audioInfo, error) {
 			if !haveFmt {
 				return nil, errors.New("data before fmt chunk")
 			}
-			return wavData(ctx, r, size, st.Size()-pos, tag, channels, bits, rate, align)
+			return wavData(ctx, r, size, fileSize-pos, tag, channels, bits, rate, align)
 		default:
 			skip := size + size%2
 			if _, err := io.CopyN(io.Discard, r, skip); err != nil {
@@ -281,7 +311,7 @@ func wavData(ctx context.Context, r *bufio.Reader, size, remaining int64, tag, c
 
 // ---- MP3 ----
 
-func analyzeMP3(ctx context.Context, fh *os.File) (*audioInfo, error) {
+func analyzeMP3(ctx context.Context, fh io.Reader) (*audioInfo, error) {
 	dec, err := mp3.NewDecoder(fh)
 	if err != nil {
 		return nil, err
@@ -324,55 +354,49 @@ func analyzeMP3(ctx context.Context, fh *os.File) (*audioInfo, error) {
 
 // ---- Ogg Vorbis ----
 
-func analyzeOgg(ctx context.Context, fh *os.File) (*audioInfo, error) {
-	rd, err := oggvorbis.NewReader(bufio.NewReaderSize(fh, 64<<10))
-	if err != nil {
-		return nil, err
+// analyzeOgg reads only the identification header (sample rate, channels) and
+// the granule position of the last page (length). It does not decode audio:
+// the Vorbis decoder libraries available in pure Go can be sent into endless
+// loops by a hostile file, which would block every other thumbnail. The
+// browser renders Ogg waveforms.
+func analyzeOgg(fh *os.File, size int64) (*audioInfo, error) {
+	head := make([]byte, 64)
+	n, _ := io.ReadFull(fh, head)
+	head = head[:n]
+	// page header: "OggS", version, type, granule(8), serial(4), seq(4), crc(4), segments(1), table
+	if len(head) < 28 || string(head[:4]) != "OggS" {
+		return nil, errors.New("not an Ogg file")
 	}
-	rate, ch := rd.SampleRate(), rd.Channels()
+	pos := 27 + int(head[26])
+	if pos+16 > len(head) || string(head[pos:pos+7]) != "\x01vorbis" {
+		return nil, errors.New("not Ogg Vorbis")
+	}
+	id := head[pos+7:]
+	ch := int(id[4])
+	rate := int(binary.LittleEndian.Uint32(id[5:9]))
 	if rate < 1000 || rate > 768000 || ch < 1 || ch > 32 {
 		return nil, errors.New("unsupported Ogg Vorbis parameters")
 	}
-	info := &audioInfo{SampleRate: rate, Channels: ch}
-	if n := rd.Length(); n > 0 {
-		info.Duration = float64(n) / float64(rate)
+	info := &audioInfo{SampleRate: rate, Channels: ch, noWaveform: true}
+	// the last page within the final 64 KiB carries the total sample count
+	tail := int64(64 << 10)
+	if size < tail {
+		tail = size
 	}
-	col := &peakCollector{maxFrames: int64(maxPreviewSeconds) * int64(rate)}
-	buf := make([]float32, 4096*ch)
-	capped := false
-	var decoded int64
-	for !capped {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		n, err := rd.Read(buf)
-		for i := 0; i+ch <= n && !capped; i += ch {
-			var m float32
-			for c := 0; c < ch; c++ {
-				v := buf[i+c]
-				if v < 0 {
-					v = -v
-				}
-				m = max(m, v)
-			}
-			decoded++
-			if e := col.add(m); errors.Is(e, errPreviewCap) {
-				capped = true
+	buf := make([]byte, tail)
+	if _, err := fh.ReadAt(buf, size-tail); err == nil || err == io.EOF {
+		if k := bytes.LastIndex(buf, []byte("OggS")); k >= 0 && k+14 <= len(buf) {
+			if g := int64(binary.LittleEndian.Uint64(buf[k+6 : k+14])); g > 0 {
+				info.Duration = float64(g) / float64(rate)
 			}
 		}
-		if err != nil {
-			break
-		}
 	}
-	if info.Duration == 0 && !capped {
-		info.Duration = float64(decoded) / float64(rate)
-	}
-	return finishInfo(col, info, capped), nil
+	return info, nil
 }
 
 // ---- FLAC ----
 
-func analyzeFLAC(ctx context.Context, fh *os.File) (*audioInfo, error) {
+func analyzeFLAC(ctx context.Context, fh io.Reader) (*audioInfo, error) {
 	stream, err := flac.New(bufio.NewReaderSize(fh, 64<<10))
 	if err != nil {
 		return nil, err
@@ -473,41 +497,86 @@ func attrsFromAudio(a *audioInfo) map[string]any {
 	return m
 }
 
+// measuredAttrs are the attributes derived from an audio file.
+var measuredAttrs = []string{"duration_s", "sample_rate", "channels", "bit_depth", "peak_dbfs"}
+
+// previewFailedAttr records the content hash of a file whose preview could not
+// be made, so that it is not tried again at every start unless the file changes.
+const previewFailedAttr = "preview_failed_sha256"
+
 // audioPreviewFile makes the waveform thumbnail (when the asset has none) and
-// fills in missing audio attributes of the primary file at path.
-func (s *Service) audioPreviewFile(ctx context.Context, assetID, path, extension string) error {
+// fills in missing audio attributes of the primary file fileID at path. With
+// force (the primary file changed) the measured attributes are replaced by
+// those of this file.
+func (s *Service) audioPreviewFile(ctx context.Context, assetID, fileID, path, extension string, force bool) error {
 	needThumb, attrs, err := s.previewNeeds(ctx, assetID)
 	if err != nil {
 		return err
 	}
-	_, haveDur := attrs["duration_s"]
-	_, havePeak := attrs["peak_dbfs"]
-	if !needThumb && haveDur && havePeak {
+	sha := s.fileSHA(ctx, fileID)
+	if !force && sha != "" && attrs[previewFailedAttr] == sha {
 		return nil
 	}
-	release, err := s.acquireThumb(ctx)
+	_, haveDur := attrs["duration_s"]
+	_, havePeak := attrs["peak_dbfs"]
+	if !force && !needThumb && haveDur && (havePeak || extension == ".ogg" || extension == ".oga") {
+		return nil
+	}
+	if st, err := os.Stat(path); err != nil || st.Size() > maxPreviewFileBytes {
+		s.markPreviewFailed(ctx, assetID, sha)
+		return fmt.Errorf("audio file is missing or too large to analyse on the server")
+	}
+	release, err := s.acquireMedia(ctx)
 	if err != nil {
 		return err
 	}
-	// Decoding runs inside the upload request: give up rather than keep a
+	// Decoding can run inside the upload request: give up rather than keep a
 	// client waiting; the browser renders such a file later.
 	actx, cancel := context.WithTimeout(ctx, maxPreviewTime)
 	info, err := analyzeAudio(actx, path, extension)
 	cancel()
 	release()
 	if err != nil {
+		if ctx.Err() == nil {
+			s.markPreviewFailed(ctx, assetID, sha)
+		}
 		return err
 	}
-	if needThumb {
+	if needThumb && !info.noWaveform {
 		if err := s.putThumb(ctx, assetID, renderWaveform(info.peaks)); err != nil {
 			return err
 		}
 	}
-	if err := s.setAbsentAttrs(ctx, assetID, attrsFromAudio(info)); err != nil {
+	if err := s.setMeasuredAttrs(ctx, assetID, attrsFromAudio(info), force); err != nil {
 		return err
 	}
 	s.syncSidecar(ctx, assetID)
 	return nil
+}
+
+func (s *Service) acquireMedia(ctx context.Context) (release func(), err error) {
+	select {
+	case s.mediaSem <- struct{}{}:
+		return func() { <-s.mediaSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *Service) fileSHA(ctx context.Context, fileID string) string {
+	var sha string
+	_ = s.db.QueryRowContext(ctx, `SELECT sha256 FROM asset_files WHERE id = ?`, fileID).Scan(&sha)
+	return sha
+}
+
+// markPreviewFailed remembers that the file with this hash has no server-side preview.
+func (s *Service) markPreviewFailed(ctx context.Context, assetID, sha string) {
+	if sha == "" {
+		return
+	}
+	if err := s.writeAttrs(ctx, assetID, func(a map[string]any) bool { a[previewFailedAttr] = sha; return true }); err != nil {
+		s.log.Debug("mark preview failed", "asset", assetID, "err", err)
+	}
 }
 
 // previewNeeds reports whether the asset still lacks a thumbnail and returns
@@ -524,9 +593,42 @@ func (s *Service) previewNeeds(ctx context.Context, assetID string) (needThumb b
 }
 
 // setAbsentAttrs adds the given attributes that the asset does not have yet.
-// Values measured from the file are derived data: updated_at and the activity
-// feed stay untouched.
 func (s *Service) setAbsentAttrs(ctx context.Context, assetID string, add map[string]any) error {
+	return s.setMeasuredAttrs(ctx, assetID, add, false)
+}
+
+// setMeasuredAttrs stores attributes measured from a file: only the missing
+// ones, or with overwrite the whole measured set (stale values of a former
+// primary file are removed). It clears the failure marker. Derived data:
+// updated_at and the activity feed stay untouched.
+func (s *Service) setMeasuredAttrs(ctx context.Context, assetID string, add map[string]any, overwrite bool) error {
+	return s.writeAttrs(ctx, assetID, func(attrs map[string]any) bool {
+		changed := false
+		if _, ok := attrs[previewFailedAttr]; ok {
+			delete(attrs, previewFailedAttr)
+			changed = true
+		}
+		if overwrite {
+			for _, k := range measuredAttrs {
+				if _, ok := attrs[k]; ok {
+					delete(attrs, k)
+					changed = true
+				}
+			}
+		}
+		for k, v := range add {
+			if _, ok := attrs[k]; !ok {
+				attrs[k] = v
+				changed = true
+			}
+		}
+		return changed
+	})
+}
+
+// writeAttrs applies fn to the attributes of an asset in one transaction.
+func (s *Service) writeAttrs(ctx context.Context, assetID string, fn func(map[string]any) bool) error {
+	// TODO(lock): serialise with other mutations of this asset (lockAssets) once available.
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		var raw string
 		if err := tx.QueryRowContext(ctx, `SELECT attrs FROM assets WHERE id = ?`, assetID).Scan(&raw); err != nil {
@@ -534,14 +636,7 @@ func (s *Service) setAbsentAttrs(ctx context.Context, assetID string, add map[st
 		}
 		attrs := map[string]any{}
 		_ = json.Unmarshal([]byte(raw), &attrs)
-		changed := false
-		for k, v := range add {
-			if _, ok := attrs[k]; !ok {
-				attrs[k] = v
-				changed = true
-			}
-		}
-		if !changed {
+		if !fn(attrs) {
 			return nil
 		}
 		b, err := json.Marshal(attrs)

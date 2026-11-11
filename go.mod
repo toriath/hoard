@@ -5,7 +5,6 @@ go 1.27.4
 require (
 	github.com/anthropics/anthropic-sdk-go/v2 v2.9.0
 	github.com/hajimehoshi/go-mp3 v0.3.4
-	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/mewkiz/flac v1.0.14
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/crypto v0.58.0
@@ -23,7 +22,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/icza/bitio v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
-	github.com/jfreymuth/vorbis v1.0.2 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mewkiz/pkg v0.0.0-20250417130911-3f050ff8c56d // indirect
 	github.com/mewpkg/term v0.0.0-20241026122259-37a80af23985 // indirect

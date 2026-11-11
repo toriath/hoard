@@ -2,16 +2,18 @@ package hoard
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 )
 
@@ -24,6 +26,8 @@ import (
 const (
 	// ImportMaxEntries is the most entries (files and folders) a zip may hold.
 	ImportMaxEntries = 10000
+	// ImportMaxZipBytes caps the size of the uploaded archive itself.
+	ImportMaxZipBytes = 2 << 30
 	// importMaxRatio is the compression ratio above which a large entry is
 	// taken for a zip bomb. Deflate cannot exceed about 1000:1.
 	importMaxRatio = 200
@@ -85,18 +89,21 @@ type ImportFailure struct {
 
 // ImportResult summarises an import.
 type ImportResult struct {
-	Summary        string          `json:"summary"`
-	Mode           string          `json:"mode"`
-	CollectionID   string          `json:"collection_id,omitempty"`
-	CollectionName string          `json:"collection_name,omitempty"`
-	License        string          `json:"license,omitempty"`
-	LicenseSource  string          `json:"license_source,omitempty"` // the file the licence was read from, or "options"
-	Attribution    string          `json:"attribution,omitempty"`
-	Assets         []ImportedAsset `json:"assets"`
-	Files          int             `json:"files"`
-	Skipped        int             `json:"skipped"`
-	SkippedSample  []string        `json:"skipped_sample,omitempty"`
-	Failed         []ImportFailure `json:"failed,omitempty"`
+	Summary         string          `json:"summary"`
+	Mode            string          `json:"mode"`
+	CollectionID    string          `json:"collection_id,omitempty"`
+	CollectionName  string          `json:"collection_name,omitempty"`
+	License         string          `json:"license,omitempty"`
+	LicenseSource   string          `json:"license_source,omitempty"` // the file the licence was read from, or "options"
+	Attribution     string          `json:"attribution,omitempty"`
+	Assets          []ImportedAsset `json:"assets"`
+	Files           int             `json:"files"`
+	Docs            []string        `json:"docs,omitempty"`             // licence and readme files of the pack; not imported as assets
+	LicenseConflict []string        `json:"license_conflict,omitempty"` // licences found that disagree; none was applied
+	AINotQueued     int             `json:"ai_not_queued,omitempty"`    // assets the AI agent was not asked to describe
+	Skipped         int             `json:"skipped"`
+	SkippedSample   []string        `json:"skipped_sample,omitempty"`
+	Failed          []ImportFailure `json:"failed,omitempty"`
 }
 
 // ImportZipReader spools r into tmp/ (at most maxBytes) and imports it.
@@ -109,10 +116,11 @@ func (s *Service) ImportZipReader(ctx context.Context, r io.Reader, zipName stri
 		return nil, err
 	}
 	defer os.Remove(tmp.Name())
-	limited := io.Reader(r)
-	if maxBytes > 0 {
-		limited = io.LimitReader(r, maxBytes+1)
+	// The archive itself is capped too: the configured upload size, at most 2 GiB.
+	if maxBytes <= 0 || maxBytes > ImportMaxZipBytes {
+		maxBytes = ImportMaxZipBytes
 	}
+	limited := io.LimitReader(r, maxBytes+1)
 	n, err := io.Copy(tmp, limited)
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
@@ -120,7 +128,7 @@ func (s *Service) ImportZipReader(ctx context.Context, r io.Reader, zipName stri
 	if err != nil {
 		return nil, fmt.Errorf("store upload: %w", err)
 	}
-	if maxBytes > 0 && n > maxBytes {
+	if n > maxBytes {
 		return nil, ErrTooLarge
 	}
 	return s.ImportZip(ctx, tmp.Name(), zipName, opts, maxBytes)
@@ -159,6 +167,55 @@ var reLicenseName = regexp.MustCompile(`(?i)^(licen[sc]e|copying)([-_. ].*)?$`)
 
 var reDocName = regexp.MustCompile(`(?i)^(licen[sc]e|copying|readme|credits?|attribution|notice|authors|terms)([-_. ].*)?$`)
 
+// docExts are the extensions of files that document a pack (none counts too).
+var docExts = map[string]bool{"": true, ".txt": true, ".md": true, ".rst": true, ".html": true, ".htm": true, ".pdf": true}
+
+// isPackDoc reports whether a root file is the pack's licence, readme or
+// credits: a documentation name with a text or document extension.
+func isPackDoc(name string) bool {
+	e := filepath.Ext(name)
+	return docExts[strings.ToLower(e)] && reDocName.MatchString(strings.TrimSuffix(name, e))
+}
+
+// zipEntryCount reads the number of entries declared by the end-of-central-
+// directory record (and the zip64 one) without parsing the directory.
+func zipEntryCount(path string) (uint64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := st.Size()
+	tail := min(size, 64<<10+22)
+	buf := make([]byte, tail)
+	if _, err := f.ReadAt(buf, size-tail); err != nil && err != io.EOF {
+		return 0, err
+	}
+	i := bytes.LastIndex(buf, []byte("PK\x05\x06"))
+	if i < 0 || i+22 > len(buf) {
+		return 0, errors.New("no end of central directory")
+	}
+	n := uint64(binary.LittleEndian.Uint16(buf[i+10:]))
+	if n != 0xFFFF {
+		return n, nil
+	}
+	// zip64: the locator sits right before the end record
+	if i >= 20 && string(buf[i-20:i-16]) == "PK\x06\x07" {
+		off := int64(binary.LittleEndian.Uint64(buf[i-12:]))
+		var rec [56]byte
+		if off >= 0 && off+56 <= size {
+			if _, err := f.ReadAt(rec[:], off); err == nil && string(rec[:4]) == "PK\x06\x06" {
+				return binary.LittleEndian.Uint64(rec[32:]), nil
+			}
+		}
+	}
+	return n, nil
+}
+
 // ImportZip imports the archive at path as a pack. zipName is the name the
 // archive was uploaded under. maxBytes bounds the total uncompressed size (0 =
 // unlimited).
@@ -170,6 +227,11 @@ func (s *Service) ImportZip(ctx context.Context, zipPath, zipName string, opts I
 		if _, err := s.GetProject(ctx, opts.ProjectID); err != nil {
 			return nil, err
 		}
+	}
+	// The central directory is read in full by zip.OpenReader: look at the
+	// declared entry count first.
+	if n, err := zipEntryCount(zipPath); err == nil && n > ImportMaxEntries {
+		return nil, invalid("the archive has %d entries; at most %d are imported at once", n, ImportMaxEntries)
 	}
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -226,9 +288,12 @@ func (s *Service) ImportZip(ctx context.Context, zipPath, zipName string, opts I
 	if opts.License != "" {
 		res.License, res.LicenseSource = opts.License, "options"
 	}
-	lic, attr, src := s.detectPackLicense(entries)
+	lic, attr, src, conflict := s.detectPackLicense(entries)
 	if res.License == "" && lic != "" {
 		res.License, res.LicenseSource = lic, src
+	}
+	if res.License == "" {
+		res.LicenseConflict = conflict
 	}
 	res.Attribution = attr
 
@@ -252,8 +317,8 @@ func (s *Service) ImportZip(ctx context.Context, zipPath, zipName string, opts I
 	byKey := map[string]*group{}
 	for _, e := range entries {
 		root := len(e.parts) == 1
-		if opts.Mode == ImportPerFile && root && reDocName.MatchString(strings.TrimSuffix(e.base(), filepath.Ext(e.base()))) {
-			skip(strings.Join(e.parts, "/")) // describes the pack; its text goes into the collection
+		if root && isPackDoc(e.base()) { // describes the pack; never an asset, whatever the mode
+			res.Docs = append(res.Docs, e.base())
 			continue
 		}
 		var key, gname, fname string
@@ -364,6 +429,14 @@ func (s *Service) ImportZip(ctx context.Context, zipPath, zipName string, opts I
 	if res.License != "" {
 		res.Summary += "; license " + res.License
 	}
+	if len(res.Docs) > 0 {
+		res.Summary += "; not imported as assets: " + strings.Join(res.Docs, ", ")
+	}
+	if len(res.LicenseConflict) > 0 {
+		res.Summary += "; no license applied, the pack names several (" + strings.Join(res.LicenseConflict, ", ") + ")"
+	} else if res.License == "" {
+		res.Summary += "; no license found in the pack"
+	}
 	if res.Skipped > 0 {
 		res.Summary += fmt.Sprintf("; skipped %d entr%s", res.Skipped, map[bool]string{true: "y", false: "ies"}[res.Skipped == 1])
 	}
@@ -419,152 +492,6 @@ func cleanZipPath(name string) (parts []string, hidden bool) {
 		parts = append(parts, p)
 	}
 	return parts, false
-}
-
-// ---- licence detection ----
-
-// detectPackLicense reads the descriptive files in the archive's root and
-// looks for a licence and an attribution line. LICENSE and COPYING files come
-// first, then READMEs and credits, then any other .txt or .md file.
-func (s *Service) detectPackLicense(entries []zipEntry) (license, attribution, source string) {
-	type doc struct {
-		e    zipEntry
-		rank int
-	}
-	var docs []doc
-	for _, e := range entries {
-		if len(e.parts) != 1 {
-			continue
-		}
-		stem := strings.TrimSuffix(e.base(), filepath.Ext(e.base()))
-		low := strings.ToLower(e.base())
-		switch {
-		case reLicenseName.MatchString(stem):
-			docs = append(docs, doc{e, 0})
-		case reDocName.MatchString(stem):
-			docs = append(docs, doc{e, 1})
-		case strings.HasSuffix(low, ".txt") || strings.HasSuffix(low, ".md"):
-			docs = append(docs, doc{e, 2})
-		}
-	}
-	sort.SliceStable(docs, func(i, j int) bool { return docs[i].rank < docs[j].rank })
-	if len(docs) > 8 {
-		docs = docs[:8]
-	}
-	for _, d := range docs {
-		if d.e.f.UncompressedSize64 > 2<<20 {
-			continue
-		}
-		rc, err := d.e.f.Open()
-		if err != nil {
-			continue
-		}
-		b, _ := io.ReadAll(io.LimitReader(rc, importDocLimit))
-		rc.Close()
-		text := strings.ToValidUTF8(string(b), "")
-		if license == "" {
-			if l := DetectLicense(text); l != "" {
-				license, source = l, d.e.base()
-			}
-		}
-		if attribution == "" {
-			attribution = DetectAttribution(text)
-		}
-		if license != "" && attribution != "" {
-			break
-		}
-	}
-	return license, attribution, source
-}
-
-var reMIT = regexp.MustCompile(`\bmit licen[sc]e\b`)
-
-var (
-	reCCURL   = regexp.MustCompile(`(?i)creativecommons\.org/(?:licenses|publicdomain)/([a-z\-]+)/(\d\.\d)`)
-	reCCLong  = regexp.MustCompile(`(?i)creative\s+commons\s+attribution((?:[\s\-]*(?:non-?commercial|share-?alike|no-?deriv(?:ative)?s?))*)[\s\-]*(?:(?:license|licence)?[\s,]*)?(?:(?:version|v)?\s*)?(\d\.\d)?`)
-	reCCShort = regexp.MustCompile(`(?i)\bcc[\s\-_]?by((?:[\s\-_]?(?:nc|sa|nd))*)[\s\-_]*v?(\d\.\d)?`)
-)
-
-// DetectLicense recognises common licences by their wording in a licence or
-// readme text and returns an SPDX-style identifier, or "" when unsure.
-func DetectLicense(text string) string {
-	low := strings.ToLower(text)
-	ccID := func(mods, ver string) string {
-		id := "CC-BY"
-		m := strings.ToLower(mods)
-		for _, k := range []struct{ word, tag string }{{"noncommercial", "NC"}, {"non-commercial", "NC"}, {"nc", "NC"}, {"sharealike", "SA"}, {"share-alike", "SA"}, {"sa", "SA"}, {"noderiv", "ND"}, {"no-deriv", "ND"}, {"nd", "ND"}} {
-			if containsWord(m, k.word) && !strings.Contains(id, "-"+k.tag) {
-				id += "-" + k.tag
-			}
-		}
-		if ver != "" {
-			id += "-" + ver
-		}
-		return id
-	}
-	switch {
-	case strings.Contains(low, "cc0") || strings.Contains(low, "creative commons zero") || strings.Contains(low, "cc-zero") ||
-		strings.Contains(low, "creativecommons.org/publicdomain/zero"):
-		return "CC0-1.0"
-	}
-	if m := reCCURL.FindStringSubmatch(text); m != nil {
-		kind := strings.ToUpper(m[1])
-		if kind == "ZERO" {
-			return "CC0-1.0"
-		}
-		return "CC-" + kind + "-" + m[2]
-	}
-	if m := reCCLong.FindStringSubmatch(text); m != nil {
-		return ccID(m[1], m[2])
-	}
-	if m := reCCShort.FindStringSubmatch(text); m != nil {
-		return ccID(m[1], m[2])
-	}
-	switch {
-	case strings.Contains(low, "sil open font license") || strings.Contains(low, "open font license"):
-		return "OFL-1.1"
-	case strings.Contains(low, "permission is hereby granted, free of charge") || reMIT.MatchString(low):
-		return "MIT"
-	case strings.Contains(low, "apache license") && strings.Contains(low, "2.0"):
-		return "Apache-2.0"
-	case strings.Contains(low, "public domain"):
-		return "Public Domain"
-	}
-	return ""
-}
-
-func containsWord(hay, word string) bool {
-	for i := 0; ; {
-		j := strings.Index(hay[i:], word)
-		if j < 0 {
-			return false
-		}
-		a, b := i+j, i+j+len(word)
-		isLetter := func(c byte) bool { return c >= 'a' && c <= 'z' }
-		if (a == 0 || !isLetter(hay[a-1])) && (b == len(hay) || !isLetter(hay[b])) {
-			return true
-		}
-		i = a + 1
-	}
-}
-
-var reAttribution = regexp.MustCompile(`(?im)^[\s\-*#>]*((?:attribution|credits?|author|artist|created by|made by|copyright|\(c\)|©)\b.{0,200}|by\s+\S.{0,160})$`)
-
-// DetectAttribution returns the first line of a text that reads like an
-// attribution ("Created by …", "Author: …", "Copyright …", "by …").
-func DetectAttribution(text string) string {
-	for _, m := range reAttribution.FindAllStringSubmatch(text, 20) {
-		line := strings.TrimSpace(m[1])
-		// A bare label such as "Credits:" or "Attribution" says nothing.
-		if i := strings.IndexAny(line, ":"); i >= 0 && strings.TrimSpace(line[i+1:]) == "" {
-			continue
-		}
-		if len(strings.Fields(line)) < 2 {
-			continue
-		}
-		return truncateRunes(line, 200)
-	}
-	return ""
 }
 
 // Validate normalises the options (default mode, tag names) and rejects

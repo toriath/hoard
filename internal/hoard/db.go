@@ -53,6 +53,7 @@ type Service struct {
 	secret  []byte // HMAC key for signed URLs
 
 	thumbSem chan struct{}  // one image is decoded at a time
+	mediaSem chan struct{}  // one audio file or font is analysed at a time, apart from images
 	assetMu  [64]sync.Mutex // serialises sidecar writes per asset (striped)
 	tokenMu  sync.Mutex
 	tokenUse map[string]time.Time // throttles last_used_at writes
@@ -85,6 +86,7 @@ func Open(dataDir string, log *slog.Logger) (*Service, error) {
 		dataDir:  dataDir,
 		log:      log,
 		thumbSem: make(chan struct{}, 1),
+		mediaSem: make(chan struct{}, 1),
 		tokenUse: map[string]time.Time{},
 	}
 	if err := s.migrate(); err != nil {

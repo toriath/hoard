@@ -109,11 +109,20 @@ func renderSpecimen(f *opentype.Font) *image.NRGBA {
 }
 
 // fontPreviewFile writes a specimen thumbnail when the asset has none.
-func (s *Service) fontPreviewFile(ctx context.Context, assetID, path string) (err error) {
-	needThumb, _, err := s.previewNeeds(ctx, assetID)
+func (s *Service) fontPreviewFile(ctx context.Context, assetID, fileID, path string) (err error) {
+	needThumb, attrs, err := s.previewNeeds(ctx, assetID)
 	if err != nil || !needThumb {
 		return err
 	}
+	sha := s.fileSHA(ctx, fileID)
+	if sha != "" && attrs[previewFailedAttr] == sha {
+		return nil
+	}
+	defer func() {
+		if err != nil && ctx.Err() == nil {
+			s.markPreviewFailed(ctx, assetID, sha)
+		}
+	}()
 	st, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -125,7 +134,7 @@ func (s *Service) fontPreviewFile(ctx context.Context, assetID, path string) (er
 	if err != nil {
 		return err
 	}
-	release, err := s.acquireThumb(ctx)
+	release, err := s.acquireMedia(ctx)
 	if err != nil {
 		return err
 	}

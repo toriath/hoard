@@ -289,7 +289,7 @@ type searchIn struct {
 	ProjectID    string   `json:"project_id,omitempty" jsonschema:"only assets used in this project; pass 'none' for assets not used in any project"`
 	License      string   `json:"license,omitempty" jsonschema:"exact license; pass 'none' for assets without license information"`
 	Statuses     []string `json:"statuses,omitempty" jsonschema:"review status, any of: none, draft, approved, final, rework, rejected, placeholder, superseded"`
-	Colors       []string `json:"colors,omitempty" jsonschema:"hex colours like #d94c4c; assets whose picture has each of these as a dominant colour (matched to the nearest of 53 palette colours)"`
+	Colors       []string `json:"colors,omitempty" jsonschema:"hex colours like #d94c4c; assets whose picture has each of these as a dominant colour (at most 10; each is matched to the nearest of 53 palette colours, and the asset matches when that colour makes up at least 10% of its picture)"`
 	Untagged     bool     `json:"untagged,omitempty" jsonschema:"only assets without any tag"`
 	Trashed      bool     `json:"trashed,omitempty" jsonschema:"search the trash instead of the library"`
 	Sort         string   `json:"sort,omitempty" jsonschema:"relevance (default with a query), created (default otherwise), updated, name, size or type"`

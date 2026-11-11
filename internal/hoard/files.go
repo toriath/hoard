@@ -144,6 +144,7 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 	// 3. Index.
 	res := &AddFileResult{File: f}
 	makePrimary := false
+	hadPrimary := a.Primary() != nil
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		for _, id := range replaced {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM asset_files WHERE id = ?`, id); err != nil {
@@ -211,7 +212,7 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 	// or a waveform / font specimen when there is none yet. Images also yield
 	// a perceptual hash and dominant colours.
 	if makePrimary {
-		if st := s.previewPrimary(ctx, assetID, f.ID, filename, dst); st != nil && st.PHash != "" {
+		if st := s.previewPrimary(ctx, assetID, f.ID, filename, dst, hadPrimary); st != nil && st.PHash != "" {
 			res.SimilarTo = s.nearAssets(ctx, st.PHash, assetID, NearIdenticalDistance, 10, res.DuplicateOf)
 		}
 	}
@@ -230,6 +231,7 @@ func refreshAggregates(ctx context.Context, tx *sql.Tx, assetID string) error {
 // DeleteFile removes one file from an asset.
 func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error {
 	var filename string
+	var wasPrimary bool
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, `SELECT filename FROM asset_files WHERE id = ? AND asset_id = ?`, fileID, assetID).Scan(&filename)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -238,8 +240,16 @@ func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error 
 		if err != nil {
 			return err
 		}
+		if err := tx.QueryRowContext(ctx, `SELECT primary_file_id = ? FROM assets WHERE id = ?`, fileID, assetID).Scan(&wasPrimary); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM asset_files WHERE id = ?`, fileID); err != nil {
 			return err
+		}
+		if wasPrimary { // the colours described the removed file
+			if _, err := tx.ExecContext(ctx, `DELETE FROM asset_colors WHERE asset_id = ?`, assetID); err != nil {
+				return err
+			}
 		}
 		// Re-point the primary file if it was the one removed.
 		if _, err := tx.ExecContext(ctx, `UPDATE assets SET primary_file_id = COALESCE(
@@ -259,6 +269,12 @@ func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error 
 	if err := os.Remove(filepath.Join(s.assetDir(assetID), "files", filename)); err != nil && !os.IsNotExist(err) {
 		s.log.Warn("remove file", "asset", assetID, "file", filename, "err", err)
 	}
+	if wasPrimary { // a file took over as primary: its preview, hash and colours (best effort)
+		var nid, nname string
+		if err := s.db.QueryRowContext(ctx, `SELECT f.id, f.filename FROM assets a JOIN asset_files f ON f.id = a.primary_file_id WHERE a.id = ?`, assetID).Scan(&nid, &nname); err == nil {
+			s.previewPrimary(ctx, assetID, nid, nname, filepath.Join(s.assetDir(assetID), "files", nname), true)
+		}
+	}
 	s.syncSidecar(ctx, assetID)
 	return nil
 }
@@ -276,7 +292,7 @@ func (s *Service) SetPrimaryFile(ctx context.Context, assetID, fileID string) er
 	if _, err := s.db.ExecContext(ctx, `UPDATE assets SET primary_file_id = ?, updated_at = ? WHERE id = ?`, fileID, now(), assetID); err != nil {
 		return err
 	}
-	s.previewPrimary(ctx, assetID, fileID, filename, filepath.Join(s.assetDir(assetID), "files", filename))
+	s.previewPrimary(ctx, assetID, fileID, filename, filepath.Join(s.assetDir(assetID), "files", filename), true)
 	s.syncSidecar(ctx, assetID)
 	return nil
 }
@@ -326,8 +342,13 @@ func (s *Service) ThumbPath(assetID string) (path, mime string) {
 // thumbnail (plus perceptual hash and colours) for a decodable image, a
 // waveform or font specimen for audio and fonts that have no thumbnail yet.
 // It returns the image statistics when there are any. Failures are logged:
-// a file without preview is still a valid asset.
-func (s *Service) previewPrimary(ctx context.Context, assetID, fileID, filename, path string) *imageStats {
+// a file without preview is still a valid asset. force says that the
+// primary file replaced another one (measured audio attributes are redone).
+func (s *Service) previewPrimary(ctx context.Context, assetID, fileID, filename, path string, force bool) *imageStats {
+	// The colours describe the primary file: drop those of the former one.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM asset_colors WHERE asset_id = ?`, assetID); err != nil {
+		s.log.Debug("clear colours", "asset", assetID, "err", err)
+	}
 	e := ext(filename)
 	switch {
 	case decodableImage[e]:
@@ -337,11 +358,11 @@ func (s *Service) previewPrimary(ctx context.Context, assetID, fileID, filename,
 		}
 		return st
 	case audioPreview[e]:
-		if err := s.audioPreviewFile(ctx, assetID, path, e); err != nil {
+		if err := s.audioPreviewFile(ctx, assetID, fileID, path, e, force); err != nil {
 			s.log.Debug("audio preview", "asset", assetID, "file", filename, "err", err)
 		}
 	case fontPreview[e]:
-		if err := s.fontPreviewFile(ctx, assetID, path); err != nil {
+		if err := s.fontPreviewFile(ctx, assetID, fileID, path); err != nil {
 			s.log.Debug("font preview", "asset", assetID, "file", filename, "err", err)
 		}
 	}

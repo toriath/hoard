@@ -1,5 +1,5 @@
 import { useLocation } from '../../lib/router'
-import { rawUrl, thumbUrl } from '../../lib/api'
+import { thumbUrl } from '../../lib/api'
 import { libraryApi } from '../../lib/api-library'
 import { formatBytes } from '../../lib/format'
 import { useQuery } from '../../lib/store'
@@ -8,7 +8,7 @@ import { typeColor, typeIcon } from '../../ui'
 import { openAsset } from '../filters'
 import type { AssetPanelProps } from '.'
 
-/** Small preview of an asset: its thumbnail, else the picture itself, else the type icon. */
+/** Small preview of an asset: its thumbnail, else the type icon (never a full-size original). */
 export function MiniThumb({ asset }: { asset: Asset }) {
   const primary = asset.files.find((f) => f.id === asset.primary_file_id) ?? asset.files[0]
   const Icon = typeIcon(asset.type)
@@ -17,8 +17,6 @@ export function MiniThumb({ asset }: { asset: Asset }) {
     <span className="mini-thumb checker">
       {asset.thumb_version > 0 ? (
         <img src={thumbUrl(asset)} alt="" loading="lazy" decoding="async" className={pixel ? 'pixel' : undefined} draggable={false} />
-      ) : primary?.kind === 'image' ? (
-        <img src={rawUrl(asset.id, primary.filename)} alt="" loading="lazy" decoding="async" draggable={false} />
       ) : (
         <Icon aria-hidden style={{ color: typeColor(asset.type) }} />
       )}
@@ -30,7 +28,7 @@ export function MiniThumb({ asset }: { asset: Asset }) {
 export function SimilarPanel({ asset }: AssetPanelProps) {
   const loc = useLocation()
   // Re-ask when the files change: a new upload can make the asset a duplicate.
-  const q = useQuery(() => libraryApi.similar(asset.id), [asset.id, asset.updated_at])
+  const q = useQuery(() => libraryApi.similar(asset.id), [asset.id, asset.updated_at, asset.thumb_version])
   const hits = q.data ?? []
   if (hits.length === 0) return null
   const identical = hits.filter((h) => h.reasons.includes('identical file')).length

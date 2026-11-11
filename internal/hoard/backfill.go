@@ -6,13 +6,21 @@ import (
 	"time"
 )
 
+// The budget of one run (variables so that tests can shrink it).
+var (
+	backfillFiles = 500
+	backfillTime  = 10 * time.Minute
+)
+
 // RunBackfill catches up on derived data for assets that were stored before
 // it existed or without a server-side preview: perceptual hashes and colours
 // of images, waveform and font thumbnails for assets that have none. It works
 // through one file at a time (each holding the thumbnail slot while it
-// decodes), pauses between files and stops when ctx is cancelled. Files that
-// cannot be decoded are marked, so they are not retried at every start; a
-// missing preview is retried, because the cost is only reading a header.
+// decodes), pauses between files and stops when ctx is cancelled. A run
+// handles at most backfillFiles files or backfillTime; the rest follows at the
+// next start. Files that cannot be decoded are marked (images by a hash
+// sentinel, audio and fonts by the hash of the file in the asset's
+// attributes), so they are retried only when the file changes.
 func (s *Service) RunBackfill(ctx context.Context) {
 	type job struct{ assetID, fileID, filename string }
 	collect := func(query string, want func(ext string) bool) []job {
@@ -41,7 +49,12 @@ func (s *Service) RunBackfill(ctx context.Context) {
 	}
 	s.log.Info("backfilling image hashes, colours and previews", "images", len(images), "previews", len(previews))
 	done := 0
+	deadline := time.Now().Add(backfillTime)
 	pause := func() bool {
+		if done >= backfillFiles || time.Now().After(deadline) {
+			s.log.Info("backfill budget used up; the rest follows at the next start", "files", done)
+			return false
+		}
 		select {
 		case <-ctx.Done():
 			return false
@@ -73,9 +86,9 @@ func (s *Service) RunBackfill(ctx context.Context) {
 		e := ext(j.filename)
 		var err error
 		if audioPreview[e] {
-			err = s.audioPreviewFile(ctx, j.assetID, path, e)
+			err = s.audioPreviewFile(ctx, j.assetID, j.fileID, path, e, false)
 		} else {
-			err = s.fontPreviewFile(ctx, j.assetID, path)
+			err = s.fontPreviewFile(ctx, j.assetID, j.fileID, path)
 		}
 		if ctx.Err() != nil {
 			return

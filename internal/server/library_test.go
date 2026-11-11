@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -175,11 +176,11 @@ func TestImportOverREST(t *testing.T) {
 		b, ct := importForm(t, c.opts, c.name, pack)
 		e.do("POST", "/api/v1/import", b.Bytes(), map[string]string{"Content-Type": ct}, http.StatusBadRequest, nil)
 	}
-	b, ct := importForm(t, "", "p.zip", []byte("not a zip"))
+	b, ct := importForm(t, "{}", "p.zip", []byte("not a zip"))
 	e.do("POST", "/api/v1/import", b.Bytes(), map[string]string{"Content-Type": ct}, http.StatusBadRequest, nil)
 	// over the upload size limit (1 MiB in the test environment)
 	big := zipOf(t, map[string]string{"big.bin": strings.Repeat("random-ish text ", 1)})
-	b, ct = importForm(t, "", "p.zip", append(big, bytes.Repeat([]byte{1}, 2<<20)...))
+	b, ct = importForm(t, "{}", "p.zip", append(big, bytes.Repeat([]byte{1}, 2<<20)...))
 	e.do("POST", "/api/v1/import", b.Bytes(), map[string]string{"Content-Type": ct}, http.StatusRequestEntityTooLarge, nil)
 }
 
@@ -308,6 +309,8 @@ func TestSignedImportBindsItsOptions(t *testing.T) {
 	if out.Mode != "per_folder" || out.CollectionName != "Via MCP" || out.License != "CC0-1.0" || len(out.Assets) != 2 {
 		t.Fatalf("import = %+v", out)
 	}
+	// A link imports once: replaying it would import the pack again.
+	put(u.String(), http.StatusConflict, nil)
 	// the project option was honoured
 	var list struct {
 		Items []struct{ ID string } `json:"items"`
@@ -325,4 +328,53 @@ func (e *env) svcProject(name string) string {
 	}
 	e.do("POST", "/api/v1/projects", `{"name":"`+name+`"}`, nil, http.StatusOK, &out)
 	return out.ID
+}
+
+func TestImportOptionsComeFirstAndLargePacksSkipTheAI(t *testing.T) {
+	e := newEnv(t)
+	pack := zipOf(t, map[string]string{"a.png": "x"})
+
+	// the file before the options part: refused rather than imported with defaults
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, _ := mw.CreateFormFile("file", "p.zip")
+	fw.Write(pack)
+	mw.WriteField("options", `{"collection_name":"late"}`)
+	mw.Close()
+	e.do("POST", "/api/v1/import", buf.Bytes(), map[string]string{"Content-Type": mw.FormDataContentType()}, http.StatusBadRequest, nil)
+	var cols struct {
+		Items []struct{ ID string } `json:"items"`
+	}
+	e.do("GET", "/api/v1/collections", nil, nil, http.StatusOK, &cols)
+	if len(cols.Items) != 0 {
+		t.Error("something was imported")
+	}
+
+	// more assets than the AI agent is queued for
+	files := map[string]string{}
+	for i := 0; i < maxImportAI+1; i++ {
+		files[fmt.Sprintf("f%d.png", i)] = fmt.Sprintf("content %d", i)
+	}
+	body, ct := importForm(t, `{}`, "big.zip", zipOf(t, files))
+	var out struct {
+		Summary     string `json:"summary"`
+		AINotQueued int    `json:"ai_not_queued"`
+		Files       int    `json:"files"`
+	}
+	e.do("POST", "/api/v1/import", body.Bytes(), map[string]string{"Content-Type": ct}, http.StatusCreated, &out)
+	if out.Files != maxImportAI+1 || out.AINotQueued != maxImportAI+1 || !strings.Contains(out.Summary, "AI analysis was not queued for 51 assets; use analyze_assets") {
+		t.Errorf("import = %+v", out)
+	}
+	var small struct {
+		AINotQueued int `json:"ai_not_queued"`
+	}
+	body, ct = importForm(t, `{}`, "small.zip", pack)
+	e.do("POST", "/api/v1/import", body.Bytes(), map[string]string{"Content-Type": ct}, http.StatusCreated, &small)
+	if small.AINotQueued != 0 {
+		t.Errorf("small import = %+v", small)
+	}
+
+	// at most ten colours per search
+	q := strings.Repeat("ff0000,", 11)
+	e.do("GET", "/api/v1/assets?color="+q, nil, nil, http.StatusBadRequest, nil)
 }

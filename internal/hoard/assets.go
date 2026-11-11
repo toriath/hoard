@@ -345,6 +345,9 @@ func (s *Service) ListAssets(ctx context.Context, q ListQuery) (*ListResult, err
 		where = append(where, `a.status IN (`+placeholders(len(sts))+`)`)
 		args = append(args, sts...)
 	}
+	if len(q.Colors) > MaxColorFilters {
+		return nil, invalid("at most %d colours can be searched at once", MaxColorFilters)
+	}
 	for _, c := range q.Colors {
 		bucket, err := QuantizeColor(c)
 		if err != nil {

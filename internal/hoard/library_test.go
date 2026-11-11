@@ -472,7 +472,7 @@ func TestAnalyzeFLACOggMP3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.SampleRate == 0 || got.Channels == 0 || got.Duration <= 0 || !got.Complete {
+	if got.SampleRate != 44100 || got.Channels != 1 || got.Duration <= 0 || !got.noWaveform {
 		t.Errorf("ogg: %+v", got)
 	}
 
@@ -722,7 +722,7 @@ func TestImportModes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// coin.png, LICENSE.txt, readme.md at the root (own assets) + folders sprites and sounds
+		// coin.png at the root (LICENSE.txt and readme.md are documents, not assets) + folders sprites and sounds
 		if res.CollectionName != "My UI" || res.License != "MIT" || res.LicenseSource != "options" {
 			t.Fatalf("result = %+v", res)
 		}
@@ -732,7 +732,7 @@ func TestImportModes(t *testing.T) {
 				sprites = &res.Assets[i]
 			}
 		}
-		if len(res.Assets) != 5 || sprites == nil || sprites.Files != 3 {
+		if len(res.Assets) != 3 || sprites == nil || sprites.Files != 3 {
 			t.Fatalf("assets = %+v", res.Assets)
 		}
 		a, _ := s.GetAsset(ctx, sprites.ID)
@@ -751,7 +751,7 @@ func TestImportModes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(res.Assets) != 1 || res.Assets[0].Name != "pack" || res.Files != 7 {
+		if len(res.Assets) != 1 || res.Assets[0].Name != "pack" || res.Files != 5 {
 			t.Fatalf("result = %+v", res)
 		}
 		a, _ := s.GetAsset(ctx, res.Assets[0].ID)
@@ -759,7 +759,7 @@ func TestImportModes(t *testing.T) {
 		for _, f := range a.Files {
 			got = append(got, f.Filename)
 		}
-		if !contains(got, "sprites_hero_idle.png") || !contains(got, "LICENSE.txt") {
+		if !contains(got, "sprites_hero_idle.png") || contains(got, "LICENSE.txt") {
 			t.Errorf("files = %v", got)
 		}
 	})
@@ -879,34 +879,4 @@ func asInvalid(err error, target **InvalidError) bool {
 		*target = e
 	}
 	return ok
-}
-
-func TestDetectLicense(t *testing.T) {
-	cases := map[string]string{
-		"Licensed under CC0 1.0 Universal":                                             "CC0-1.0",
-		"This work is in the public domain.":                                           "Public Domain",
-		"License: CC-BY 4.0":                                                           "CC-BY-4.0",
-		"CC BY 3.0 - please credit":                                                    "CC-BY-3.0",
-		"Creative Commons Attribution 4.0 International License":                       "CC-BY-4.0",
-		"Creative Commons Attribution-ShareAlike 3.0 Unported":                         "CC-BY-SA-3.0",
-		"licensed CC-BY-SA 4.0":                                                        "CC-BY-SA-4.0",
-		"CC-BY-NC 4.0":                                                                 "CC-BY-NC-4.0",
-		"see https://creativecommons.org/licenses/by-sa/4.0/ for details":              "CC-BY-SA-4.0",
-		"This Font Software is licensed under the SIL Open Font License, Version 1.1.": "OFL-1.1",
-		"MIT License\n\nPermission is hereby granted, free of charge, to any person":   "MIT",
-		"Licensed under the Apache License, Version 2.0":                               "Apache-2.0",
-		"All rights reserved.":                                                         "",
-		"The abbreviation is used in text, nothing to see":                             "",
-	}
-	for text, want := range cases {
-		if got := DetectLicense(text); got != want {
-			t.Errorf("DetectLicense(%q) = %q, want %q", text, got, want)
-		}
-	}
-	if got := DetectAttribution("# Pack\n\nCredits:\nCreated by Jane Artist (jane.example)\n"); !strings.HasPrefix(got, "Created by Jane") {
-		t.Errorf("attribution = %q", got)
-	}
-	if got := DetectAttribution("Credits:\nenjoy\n"); got != "" {
-		t.Errorf("attribution = %q", got)
-	}
 }

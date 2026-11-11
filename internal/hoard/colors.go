@@ -20,6 +20,8 @@ const (
 	// colour of that image in a search.
 	colorMatchWeight = 0.1
 	maxImageColors   = 5
+	// MaxColorFilters is the most colours one search may combine.
+	MaxColorFilters = 10
 	// colorMinWeight drops buckets too small to describe the picture.
 	colorMinWeight = 0.03
 )

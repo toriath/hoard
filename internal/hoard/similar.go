@@ -118,7 +118,14 @@ func (s *Service) storeImageStats(ctx context.Context, assetID, fileID string, s
 	if hash == "" {
 		hash = phashNone
 	}
+	// TODO(lock): serialise with other mutations of this asset (lockAssets) once available.
 	return s.tx(ctx, func(tx *sql.Tx) error {
+		// The statistics describe the primary file; if it changed while the
+		// image was decoded, they are stale and dropped.
+		var primary string
+		if err := tx.QueryRowContext(ctx, `SELECT primary_file_id FROM assets WHERE id = ?`, assetID).Scan(&primary); err != nil || primary != fileID {
+			return nil
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE asset_files SET phash = ? WHERE id = ? AND asset_id = ?`, hash, fileID, assetID); err != nil {
 			return err
 		}
@@ -471,6 +478,7 @@ func (s *Service) FindDuplicates(ctx context.Context) ([]DuplicateGroup, error) 
 		}
 		for _, idx := range buckets {
 			if len(idx) > 2000 { // pathological bucket: skip rather than stall
+				s.log.Warn("duplicate scan: skipped an oversized hash bucket; some near-identical pictures may be missing", "entries", len(idx))
 				continue
 			}
 			for x := 0; x < len(idx); x++ {
