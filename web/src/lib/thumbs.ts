@@ -4,7 +4,7 @@
 // the asset's thumbnail, which also gives the built-in AI agent something to
 // look at.
 
-import { api, rawUrl } from './api'
+import { ApiError, api, rawUrl } from './api'
 import { emitAsset, prefs } from './store'
 import type { Asset, AssetFile } from './types'
 
@@ -217,11 +217,21 @@ const inFlight = new Set<string>()
 let chain: Promise<unknown> = Promise.resolve()
 
 // Files this browser could not render, by content hash, so that a broken or
-// unsupported file is not downloaded and retried on every visit.
+// unsupported file is not downloaded and retried on every visit. Entries
+// expire, because a browser update or a fixed bug can make a file renderable.
 const FAILED_KEY = 'hoard-thumb-failed'
-const failed = new Set<string>(JSON.parse(prefs.get(FAILED_KEY) ?? '[]') as string[])
+const FAILED_TTL = 14 * 24 * 3600 * 1000
+function loadFailures(): Map<string, number> {
+  try {
+    const entries = JSON.parse(prefs.get(FAILED_KEY) ?? '[]') as [string, number][]
+    return new Map(entries.filter(([sha, at]) => typeof sha === 'string' && Date.now() - at < FAILED_TTL))
+  } catch {
+    return new Map() // unreadable preference: start over
+  }
+}
+const failed = loadFailures()
 function rememberFailure(sha: string) {
-  failed.add(sha)
+  failed.set(sha, Date.now())
   prefs.set(FAILED_KEY, JSON.stringify([...failed].slice(-500)))
 }
 
@@ -261,7 +271,10 @@ export function ensureThumb(asset: Asset, force = false): Promise<Asset | null> 
       emitAsset(updated)
       return updated
     } catch (e) {
-      rememberFailure(file.sha256)
+      // Remember only failures of the file itself. Being offline or signed
+      // out says nothing about whether the file can be rendered.
+      const transient = e instanceof ApiError || !navigator.onLine
+      if (!transient) rememberFailure(file.sha256)
       console.warn('preview rendering failed for', asset.id, e)
       return null
     } finally {

@@ -673,8 +673,8 @@ func (s *Server) handleAIModels(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if u := strings.TrimRight(strings.TrimSpace(in.BaseURL), "/"); u != "" {
-		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			return &apiError{http.StatusBadRequest, "invalid", "base_url must be an http(s) URL"}
+		if err := ai.CheckBaseURL(u); err != nil {
+			return err
 		}
 		if u != set.BaseURL {
 			set.APIKey = ""
