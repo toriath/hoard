@@ -1,0 +1,141 @@
+name: Security
+
+# Runs on every change and once a week, because new vulnerabilities are
+# published against code that has not changed.
+#
+# Every scanner fails its job on a finding and prints the details in the job
+# log. What fails a job: a Go vulnerability in code hoard actually calls, a
+# high or critical npm advisory in a shipped package, a high or critical
+# image vulnerability that has a fix, a detected secret in the working tree,
+# or a high or critical Dockerfile misconfiguration.
+#
+# This complements, and does not replace, GitHub's own secret scanning, push
+# protection, Dependabot alerts and code scanning, which are enabled in the
+# repository settings once the repository is public.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1" # Mondays 05:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  # Pinned by digest. Bump version and digest together:
+  #   docker buildx imagetools inspect ghcr.io/aquasecurity/trivy:<version>
+  TRIVY: ghcr.io/aquasecurity/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+  GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+jobs:
+  go:
+    name: Go vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # Reports only vulnerabilities in code paths hoard actually calls.
+      - name: govulncheck
+        run: go run "$GOVULNCHECK" ./...
+
+  web:
+    name: Web dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # Only what ships in the browser bundle; build tooling is not deployed.
+      - name: npm audit
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
+
+  repo:
+    name: Secrets and configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Looks at the checked-out files only, not at history, and only at the
+      # Dockerfile for configuration mistakes.
+      - name: Trivy (secrets in the working tree, Dockerfile mistakes)
+        run: |
+          docker run --rm -v "$PWD:/src:ro" "$TRIVY" fs \
+            --scanners secret,misconfig --severity HIGH,CRITICAL \
+            --exit-code 1 --no-progress /src
+
+  image:
+    name: Image vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: hoard:scan
+          cache-from: type=gha
+          provenance: false
+      # Base image packages and every module compiled into the binary.
+      # Findings without a fix are not actionable and are left out.
+      - name: Trivy (vulnerabilities in an image built from this commit)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" image \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --no-progress hoard:scan
+
+  released:
+    name: Released image
+    # The image people actually run was built at release time. Rescan it on
+    # the weekly schedule, so a vulnerability fixed upstream since then shows
+    # up even though nothing in the repository changed.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Trivy (vulnerabilities in the latest release)
+        run: |
+          if ! docker pull --quiet "$IMAGE:latest"; then
+            echo "::notice::No released image yet; nothing to scan."
+            exit 0
+          fi
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY" image \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --no-progress "$IMAGE:latest"

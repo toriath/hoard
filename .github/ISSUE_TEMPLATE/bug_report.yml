@@ -1,0 +1,44 @@
+name: Bug report
+description: Something does not work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Security problems must not be reported here. Use the repository's Security tab instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: hoard version
+      description: Shown under Settings → About.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does it happen?
+      options:
+        - Web UI
+        - MCP
+        - REST API
+        - AI agent
+        - Installation / container
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: How hoard runs (TrueNAS, plain Docker, binary), a reverse proxy if any, browser or MCP client. Remove hostnames and tokens.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant container log lines. Check them for secrets before pasting.
+      render: text

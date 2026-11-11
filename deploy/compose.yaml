@@ -1,0 +1,40 @@
+# hoard on TrueNAS SCALE (24.10 "Electric Eel" or newer):
+#   Apps → Discover Apps → ⋮ → Install via YAML, paste this file.
+# Works unchanged with plain Docker: `docker compose -f deploy/compose.yaml up -d`.
+#
+# Before installing, create a dataset for the data (e.g. tank/apps/hoard) and
+# give the "apps" user (UID 568) full control over it.
+
+services:
+  hoard:
+    image: ghcr.io/toriath/hoard:latest
+    container_name: hoard
+    restart: unless-stopped
+    user: "568:568" # TrueNAS "apps" user; must own the dataset below
+    ports:
+      - "8080:8080" # http://<truenas>:8080 — change the left side if 8080 is taken
+    volumes:
+      - /mnt/tank/apps/hoard:/data # ← your dataset; everything hoard stores lives here
+    environment:
+      TZ: Etc/UTC # your time zone, e.g. Europe/Berlin
+      # Optional settings (defaults shown):
+      # HOARD_MAX_UPLOAD_MB: "4096"   # per-file upload limit
+      # HOARD_TRASH_DAYS: "30"        # empty the trash after N days (0 = never)
+      # HOARD_BACKUP_KEEP: "7"        # daily index snapshots to keep (0 = off)
+      # HOARD_PUBLIC_URL: ""          # only if links handed to agents must use one fixed URL
+      # First account without the setup screen (otherwise create it in the browser):
+      # HOARD_ADMIN_USER: ""
+      # HOARD_ADMIN_PASSWORD: ""
+    # Hardening: the app only ever writes to /data.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: # set here as well: some builders drop HEALTHCHECK from OCI images
+      test: ["CMD", "/hoard", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1g

@@ -1,0 +1,291 @@
+import { Download, FileQuestion, Pause, Play } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { fileDownloadUrl, rawUrl } from '../lib/api'
+import { stopPreview } from '../lib/audio'
+import { formatBytes, formatDuration } from '../lib/format'
+import { MAX_DECODE_SECONDS, computePeaks, decodeAudio, drawWaveform, loadFont } from '../lib/thumbs'
+import type { Asset, AssetFile } from '../lib/types'
+import { Spinner, typeColor } from '../ui'
+import type { Viewer } from './three'
+
+/** Shows the best available preview for one file of an asset. */
+export function Preview({ asset, file }: { asset: Asset; file: AssetFile | undefined }) {
+  if (!file) {
+    return (
+      <div className="preview-stage">
+        <div className="preview-none">
+          <FileQuestion aria-hidden />
+          <span>This asset has no files yet</span>
+        </div>
+      </div>
+    )
+  }
+  const url = rawUrl(asset.id, file.filename)
+  switch (file.kind) {
+    case 'image':
+      return <ImagePreview key={url} url={url} file={file} />
+    case 'audio':
+      return <AudioPlayer key={url} url={url} file={file} color={typeColor(asset.type)} />
+    case 'video':
+      return (
+        <div className="preview-stage">
+          <video key={url} src={url} controls playsInline preload="metadata" />
+        </div>
+      )
+    case 'model':
+      return <ModelPreview key={url} url={url} />
+    case 'font':
+      return <FontPreview key={url} url={url} />
+    case 'text':
+      return <TextPreview key={url} url={url} file={file} />
+    default:
+      return (
+        <div className="preview-stage">
+          <div className="preview-none">
+            <FileQuestion aria-hidden />
+            <span>
+              No in-browser preview for <code>{file.filename.split('.').pop()}</code> files
+            </span>
+            <a className="btn btn-sm" href={fileDownloadUrl(asset.id, file.filename)}>
+              <Download aria-hidden /> Download ({formatBytes(file.size)})
+            </a>
+          </div>
+        </div>
+      )
+  }
+}
+
+function ImagePreview({ url, file }: { url: string; file: AssetFile }) {
+  const [actual, setActual] = useState(false)
+  const small = !!file.width && Math.max(file.width, file.height ?? 0) <= 160
+  return (
+    <div className={'preview-stage checker' + (actual ? ' preview-scroll' : '')} onClick={() => setActual((a) => !a)} title={actual ? 'Click to fit' : 'Click for actual size'}>
+      <img
+        src={url}
+        alt={file.filename}
+        className={actual ? 'actual' : small ? 'pixel upscale' : ''}
+        style={small || actual ? { imageRendering: small ? 'pixelated' : undefined } : undefined}
+        draggable={false}
+      />
+    </div>
+  )
+}
+
+function AudioPlayer({ url, color }: { url: string; file: AssetFile; color: string }) {
+  const audio = useRef<HTMLAudioElement>(null)
+  const canvas = useRef<HTMLCanvasElement>(null)
+  const [peaks, setPeaks] = useState<Float32Array | null>(null)
+  const [waveNote, setWaveNote] = useState('Analysing audio…')
+  const [playing, setPlaying] = useState(false)
+  const [time, setTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+
+  useEffect(() => stopPreview(), [url])
+
+  // The waveform needs the whole file decoded into memory, so it is only
+  // drawn once the duration is known to be short enough.
+  useEffect(() => {
+    if (!duration) return
+    if (duration > MAX_DECODE_SECONDS) {
+      setWaveNote('Too long for a waveform; playback works as usual')
+      return
+    }
+    let live = true
+    decodeAudio(url).then(
+      (buf) => live && setPeaks(computePeaks(buf, 160)),
+      () => live && setWaveNote('This browser cannot draw a waveform for this file'),
+    )
+    return () => {
+      live = false
+    }
+  }, [url, duration])
+
+  useEffect(() => {
+    const c = canvas.current
+    if (!c || !peaks) return
+    const dpr = Math.min(window.devicePixelRatio, 2)
+    const w = c.clientWidth
+    const h = c.clientHeight
+    c.width = w * dpr
+    c.height = h * dpr
+    const ctx = c.getContext('2d')!
+    ctx.scale(dpr, dpr)
+    const styles = getComputedStyle(c)
+    drawWaveform(ctx, peaks, w, h, styles.getPropertyValue('--border-strong'), duration ? time / duration : 0, styles.getPropertyValue('--wave'))
+  }, [peaks, time, duration])
+
+  useEffect(() => {
+    if (!playing) return
+    let raf = 0
+    const tick = () => {
+      setTime(audio.current?.currentTime ?? 0)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [playing])
+
+  const toggle = () => (audio.current?.paused ? audio.current.play() : audio.current?.pause())
+  const seek = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const a = audio.current
+    if (!a || !duration) return
+    const r = e.currentTarget.getBoundingClientRect()
+    a.currentTime = ((e.clientX - r.left) / r.width) * duration
+    setTime(a.currentTime)
+  }
+
+  return (
+    <div className="preview-stage preview-audio" style={{ '--wave': color } as React.CSSProperties}>
+      <audio
+        ref={audio}
+        src={url}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+        onError={() => setWaveNote('This browser cannot play this file')}
+        onEnded={() => setTime(0)}
+      />
+      <canvas ref={canvas} className="wave" onClick={seek} />
+      {!peaks && <div className="wave-placeholder muted">{waveNote}</div>}
+      <div className="row audio-controls">
+        <button className="btn btn-primary btn-icon play" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}>
+          {playing ? <Pause aria-hidden /> : <Play aria-hidden />}
+        </button>
+        <span className="mono muted">
+          {formatDuration(time)} / {formatDuration(duration)}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function ModelPreview({ url }: { url: string }) {
+  const host = useRef<HTMLDivElement>(null)
+  const [state, setState] = useState<{ loading: boolean; error?: string; triangles?: number }>({ loading: true })
+  useEffect(() => {
+    let viewer: Viewer | undefined
+    let live = true
+    ;(async () => {
+      try {
+        const three = await import('./three')
+        const model = await three.loadModel(url)
+        if (!live || !host.current) return
+        viewer = three.createViewer(host.current, model)
+        setState({ loading: false, triangles: model.triangles })
+      } catch (e) {
+        if (live) setState({ loading: false, error: e instanceof Error ? e.message : 'Could not load model' })
+      }
+    })()
+    return () => {
+      live = false
+      viewer?.dispose()
+    }
+  }, [url])
+  return (
+    <div className="preview-stage preview-model">
+      <div ref={host} className="model-host" />
+      {state.loading && (
+        <div className="preview-overlay">
+          <Spinner label="Loading model…" />
+        </div>
+      )}
+      {state.error && (
+        <div className="preview-none">
+          <FileQuestion aria-hidden />
+          <span>{state.error}</span>
+        </div>
+      )}
+      {state.triangles !== undefined && <span className="preview-meta mono">{state.triangles.toLocaleString()} tris · drag to orbit</span>}
+    </div>
+  )
+}
+
+const SPECIMEN = 'The quick brown fox jumps over the lazy dog'
+
+function FontPreview({ url }: { url: string }) {
+  const [family, setFamily] = useState<string>()
+  const [error, setError] = useState(false)
+  const [text, setText] = useState(SPECIMEN)
+  useEffect(() => {
+    let live = true
+    let release = () => {}
+    loadFont(url).then(
+      (f) => {
+        if (!live) return f.release() // unmounted while loading
+        release = f.release
+        setFamily(f.family)
+      },
+      () => live && setError(true),
+    )
+    return () => {
+      live = false
+      release()
+    }
+  }, [url])
+  if (error) {
+    return (
+      <div className="preview-stage">
+        <div className="preview-none">
+          <FileQuestion aria-hidden />
+          <span>This font could not be loaded by the browser</span>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="preview-stage preview-font">
+      {!family ? (
+        <Spinner />
+      ) : (
+        <div style={{ fontFamily: `"${family}"` }} className="font-specimen">
+          <input className="font-input" value={text} onChange={(e) => setText(e.target.value)} aria-label="Sample text" style={{ fontFamily: 'inherit' }} />
+          {[48, 28, 18].map((s) => (
+            <p key={s} style={{ fontSize: s }}>
+              {text || SPECIMEN}
+            </p>
+          ))}
+          <p style={{ fontSize: 15 }} className="muted">
+            ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 !?&amp;@#%
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TextPreview({ url, file }: { url: string; file: AssetFile }) {
+  const [text, setText] = useState<string>()
+  const LIMIT = 300_000
+  useEffect(() => {
+    let live = true
+    fetch(url, { credentials: 'same-origin', headers: file.size > LIMIT ? { Range: `bytes=0-${LIMIT - 1}` } : {} })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.text()
+      })
+      .then(
+        (t) => live && setText(t),
+        () => live && setText('Could not load this file.'),
+      )
+    return () => {
+      live = false
+    }
+  }, [url, file.size])
+  if (text === undefined) return <Spinner />
+  const lines = text.split('\n')
+  return (
+    <div className="preview-code">
+      <pre>
+        <code>
+          {lines.map((l, i) => (
+            <span className="line" key={i}>
+              {l + '\n'}
+            </span>
+          ))}
+        </code>
+      </pre>
+      {file.size > LIMIT && <div className="preview-meta mono">showing the first {formatBytes(LIMIT)} of {formatBytes(file.size)}</div>}
+    </div>
+  )
+}

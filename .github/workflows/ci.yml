@@ -1,0 +1,309 @@
+name: CI
+
+# Pull requests: test and prove the image builds.
+# Pushes to main: test and publish the image as `edge`. When the commits since
+# the last release call for one (scripts/next-version.sh), the same run cuts a
+# release: binaries are built, the already published image is given its
+# version tags, and a git tag plus GitHub release are created.
+#
+# Order matters. Nothing version-tagged is published before everything a
+# release needs has been built, and the version tags and the release are
+# created together at the very end by a job that runs no build code.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_as:
+        description: "Release exactly this version from main (e.g. 1.0.0). Empty: derive it from the commits."
+        required: false
+        type: string
+
+concurrency:
+  # Runs on main queue up instead of overlapping, so two merges in a row can
+  # never compute the same version.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash # -eo pipefail: a failing command inside a pipe fails the step
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web UI (type-check + bundle)
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "run gofmt -w ."; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Test the release version logic
+        run: scripts/next-version_test.sh
+
+  version:
+    name: Version
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      publish: ${{ steps.next.outputs.publish }}
+      version: ${{ steps.next.outputs.version }}
+      minor: ${{ steps.next.outputs.minor }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history and tags
+          persist-credentials: false
+      - name: Decide what this run publishes
+        id: next
+        env:
+          RELEASE_AS: ${{ inputs.release_as }}
+          ON_MAIN: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+        run: |
+          if [ "$ON_MAIN" != true ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A re-run of an older run must not move `edge` or `latest` back, or
+          # cut a release from a commit that is no longer the tip.
+          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
+            echo "::notice::$GITHUB_SHA is no longer the tip of main: nothing is published."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          scripts/next-version.sh | tee -a "$GITHUB_OUTPUT"
+
+  image:
+    name: Container image
+    needs: [test, version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io/<owner>/<repo>
+      id-token: write # keyless signing of the provenance attestation
+      attestations: write
+    env:
+      PUBLISH: ${{ needs.version.outputs.publish }}
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # This job only ever publishes `edge` and `sha-…`. Version tags are added
+      # to the same digest by the release job, once the release is certain.
+      - name: Decide tags
+        id: plan
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          {
+            echo "label=${VERSION:-dev-${GITHUB_SHA::7}}"
+            echo "tags<<EOF"
+            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+              echo "type=ref,event=pr"
+            fi
+            if [ "$PUBLISH" = true ]; then
+              echo "type=raw,value=edge"
+              echo "type=sha,format=short"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: ${{ steps.plan.outputs.tags }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.plan.outputs.label }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          # Pull requests only prove that the image builds.
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.plan.outputs.label }}
+          cache-from: type=gha
+          # Only main fills the cache; pull requests must not evict it.
+          cache-to: ${{ env.PUBLISH == 'true' && 'type=gha,mode=max' || '' }}
+          sbom: true
+          # BuildKit's own provenance embeds the whole push event, including
+          # committer and pusher email addresses, in the logs and (for public
+          # repositories) in the registry. Provenance comes from the GitHub
+          # attestation below instead, which carries no event payload.
+          provenance: false
+
+      # GitHub offers artifact attestations for public repositories only
+      # (private ones need an Enterprise plan), so skip it while private.
+      - name: Attest build provenance
+        if: env.PUBLISH == 'true' && !github.event.repository.private
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  binaries:
+    name: Release binaries
+    # Builds with a read-only token: third-party build code (npm, Go modules)
+    # never runs in a job that can write to the repository or the registry.
+    needs: version
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MINOR: ${{ needs.version.outputs.minor }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web UI
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build binaries
+        run: scripts/build-release.sh "$VERSION" release
+
+      - name: Release notes
+        env:
+          RELEASE_AS: ${{ inputs.release_as }}
+        run: |
+          scripts/next-version.sh --notes release/notes.md > /dev/null
+          {
+            echo
+            echo "## Install"
+            echo
+            echo "Container image for linux/amd64 and linux/arm64:"
+            echo
+            echo '```'
+            echo "$IMAGE:$VERSION"
+            echo '```'
+            echo
+            echo "Also tagged \`$MINOR\` and \`latest\`. Binaries for Linux and macOS are attached below; verify them with \`checksums.txt\`."
+          } >> release/notes.md
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Release
+    # Runs no code from the repository: it only publishes what the jobs before
+    # it produced. Version tags on the image and the GitHub release are
+    # created back to back, so `latest` never points at something unreleased.
+    needs: [version, image, binaries]
+    if: needs.version.outputs.version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the tag and the release
+      packages: write # add version tags to the published image
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MINOR: ${{ needs.version.outputs.minor }}
+      DIGEST: ${{ needs.image.outputs.digest }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest the release archives
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*.tar.gz
+
+      - name: Tag the image as ${{ needs.version.outputs.version }} and latest
+        run: |
+          test -n "$DIGEST"
+          docker buildx imagetools create \
+            -t "$IMAGE:$VERSION" -t "$IMAGE:$MINOR" -t "$IMAGE:latest" \
+            "$IMAGE@$DIGEST"
+
+      - name: Create tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" release/*.tar.gz release/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "v$VERSION" --notes-file release/notes.md

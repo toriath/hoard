@@ -1,0 +1,81 @@
+# Optional variant: hoard as its own machine on your tailnet with HTTPS,
+# reachable as https://hoard.<your-tailnet>.ts.net, and still on the LAN at
+# http://<truenas>:8080.
+#
+# You do NOT need this if TrueNAS itself is already on your tailnet (for
+# example through the TrueNAS Tailscale app): then deploy/compose.yaml is
+# enough and hoard is at http://<truenas-tailnet-name>:8080.
+#
+# Requirements:
+#   1. An auth key from https://login.tailscale.com/admin/settings/keys
+#      (tag it if you use ACL tags).
+#   2. MagicDNS and HTTPS certificates enabled for your tailnet
+#      (admin console → DNS).
+#   3. Two datasets for the host paths below. The hoard one must be owned by
+#      UID 568; the Tailscale container runs as root inside its container and
+#      only needs its own dataset to be writable.
+#
+# This variant follows Tailscale's documented sidecar setup but has not been
+# run by the hoard maintainers. Treat it as a starting point.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    container_name: hoard-tailscale
+    hostname: hoard # the machine name on your tailnet
+    restart: unless-stopped
+    environment:
+      TS_AUTHKEY: "REPLACE-WITH-AUTH-KEY" # one-off key; delete this line after the first start
+      TS_AUTH_ONCE: "true" # do not log in again once state exists
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true" # no kernel module or NET_ADMIN needed
+    volumes:
+      - /mnt/tank/apps/hoard-tailscale:/var/lib/tailscale
+    configs:
+      - source: serve
+        target: /config/serve.json
+    ports:
+      - "8080:8080" # LAN access (hoard shares this container's network)
+    # Userspace networking needs no privileges.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  hoard:
+    image: ghcr.io/toriath/hoard:latest
+    container_name: hoard
+    restart: unless-stopped
+    user: "568:568"
+    network_mode: service:tailscale
+    depends_on: [tailscale]
+    volumes:
+      - /mnt/tank/apps/hoard:/data
+    environment:
+      TZ: Etc/UTC # your time zone, e.g. Europe/Berlin
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: # set here as well: some builders drop HEALTHCHECK from OCI images
+      test: ["CMD", "/hoard", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+configs:
+  serve:
+    # Terminates HTTPS with the tailnet certificate and proxies to hoard.
+    # Tailnet only: Funnel (public internet) stays off.
+    content: |
+      {
+        "TCP": { "443": { "HTTPS": true } },
+        "Web": {
+          "$${TS_CERT_DOMAIN}:443": {
+            "Handlers": { "/": { "Proxy": "http://127.0.0.1:8080" } }
+          }
+        },
+        "AllowFunnel": { "$${TS_CERT_DOMAIN}:443": false }
+      }

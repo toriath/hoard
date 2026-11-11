@@ -1,0 +1,24 @@
+name: Feature request
+description: An idea for hoard
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation you are in, rather than the solution you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+  - type: checkboxes
+    id: surfaces
+    attributes:
+      label: Which parts would it touch?
+      options:
+        - label: Web UI
+        - label: MCP tools
+        - label: REST API
+        - label: AI agent

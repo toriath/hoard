@@ -1,0 +1,28 @@
+version: 2
+
+# Titles follow Conventional Commits, because the PR title becomes the commit
+# on main and decides the next version: dependencies that ship in the binary
+# or the image are a patch release ("fix"), tooling is not ("chore", "ci").
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }
+    commit-message: { prefix: fix, include: scope }
+    groups:
+      go: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: /web
+    schedule: { interval: weekly }
+    commit-message: { prefix: fix, prefix-development: chore, include: scope }
+    groups:
+      web: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    commit-message: { prefix: ci, include: scope }
+    groups:
+      actions: { patterns: ["*"] }
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }
+    commit-message: { prefix: fix, include: scope }

@@ -1,0 +1,176 @@
+/*
+ * hoard design system — tokens
+ *
+ * Every colour, size and motion value used by the UI is defined here and
+ * nowhere else. Components (components.css) and layouts (app.css) only ever
+ * reference these custom properties, so both themes stay consistent.
+ *
+ * Identity: a vault lit by gold. Warm near-black surfaces, one amber accent,
+ * and a fixed hue per asset type that reads the same in both themes.
+ */
+
+:root {
+  /* ---- type ---- */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
+  --fs-xs: 0.6875rem; /* 11 */
+  --fs-sm: 0.75rem; /* 12 */
+  --fs-md: 0.8125rem; /* 13 — UI default */
+  --fs-lg: 0.9375rem; /* 15 */
+  --fs-xl: 1.125rem; /* 18 */
+  --fs-2xl: 1.5rem; /* 24 */
+  --fs-3xl: 2rem; /* 32 */
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-bold: 650;
+
+  /* ---- space (4px grid) ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ---- shape ---- */
+  --r-sm: 6px;
+  --r-md: 9px;
+  --r-lg: 14px;
+  --r-full: 999px;
+  --control-h: 34px;
+  --control-h-sm: 28px;
+  --control-h-lg: 42px;
+
+  /* ---- motion ---- */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --t-fast: 110ms;
+  --t-med: 200ms;
+
+  /* ---- layers ---- */
+  --z-sticky: 10;
+  --z-nav: 20;
+  --z-drawer: 30;
+  --z-bulk: 35;
+  --z-dialog: 40;
+  --z-menu: 50;
+  --z-toast: 60;
+
+  /* ---- layout ---- */
+  --sidebar-w: 232px;
+  --drawer-w: 460px;
+  --topbar-h: 56px;
+  --bottomnav-h: 58px;
+
+  /* ---- asset-type hues (shared by both themes) ---- */
+  --type-sprite: #f472b6;
+  --type-tileset: #a3e635;
+  --type-ui: #38bdf8;
+  --type-texture: #fb923c;
+  --type-model: #a78bfa;
+  --type-animation: #f87171;
+  --type-vfx: #facc15;
+  --type-shader: #34d399;
+  --type-sfx: #22d3ee;
+  --type-music: #818cf8;
+  --type-voice: #e879f9;
+  --type-video: #fb7185;
+  --type-font: #94a3b8;
+  --type-other: #9ca3af;
+}
+
+/* ---- dark theme (default) ---- */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0f0e0c;
+  --surface-1: #161512;
+  --surface-2: #1e1c18;
+  --surface-3: #292620;
+  --border: #2d2a24;
+  --border-strong: #454035;
+  --text: #f1ede4;
+  --text-muted: #a9a294;
+  --text-faint: #736c5f;
+  --accent: #e9b44c;
+  --accent-hover: #f3c467;
+  --accent-fg: #1b1407;
+  --accent-soft: rgba(233, 180, 76, 0.13);
+  --accent-line: rgba(233, 180, 76, 0.45);
+  --danger: #f0705f;
+  --danger-soft: rgba(240, 112, 95, 0.14);
+  --success: #6fcf8f;
+  --success-soft: rgba(111, 207, 143, 0.14);
+  --warning: #f0a04b;
+  --info: #6fb3ef;
+  --overlay: rgba(6, 5, 4, 0.66);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --checker-a: #201e1a;
+  --checker-b: #191714;
+}
+
+/* ---- light theme ---- */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f5f2ea;
+  --surface-1: #fcfaf5;
+  --surface-2: #ffffff;
+  --surface-3: #eee9dc;
+  --border: #e1dbcb;
+  --border-strong: #c6bea9;
+  --text: #1e1b15;
+  --text-muted: #62594a;
+  --text-faint: #968d7a;
+  --accent: #a87608;
+  --accent-hover: #8d6306;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(168, 118, 8, 0.11);
+  --accent-line: rgba(168, 118, 8, 0.45);
+  --danger: #c8402f;
+  --danger-soft: rgba(200, 64, 47, 0.1);
+  --success: #2f8f55;
+  --success-soft: rgba(47, 143, 85, 0.12);
+  --warning: #b86a12;
+  --info: #2f78bd;
+  --overlay: rgba(40, 34, 22, 0.42);
+  --shadow-1: 0 1px 2px rgba(60, 48, 20, 0.1);
+  --shadow-2: 0 10px 30px rgba(60, 48, 20, 0.16), 0 2px 6px rgba(60, 48, 20, 0.1);
+  --checker-a: #ebe6d9;
+  --checker-b: #f7f4ec;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+    --bg: #f5f2ea;
+    --surface-1: #fcfaf5;
+    --surface-2: #ffffff;
+    --surface-3: #eee9dc;
+    --border: #e1dbcb;
+    --border-strong: #c6bea9;
+    --text: #1e1b15;
+    --text-muted: #62594a;
+    --text-faint: #968d7a;
+    --accent: #a87608;
+    --accent-hover: #8d6306;
+    --accent-fg: #ffffff;
+    --accent-soft: rgba(168, 118, 8, 0.11);
+    --accent-line: rgba(168, 118, 8, 0.45);
+    --danger: #c8402f;
+    --danger-soft: rgba(200, 64, 47, 0.1);
+    --success: #2f8f55;
+    --success-soft: rgba(47, 143, 85, 0.12);
+    --warning: #b86a12;
+    --info: #2f78bd;
+    --overlay: rgba(40, 34, 22, 0.42);
+    --shadow-1: 0 1px 2px rgba(60, 48, 20, 0.1);
+    --shadow-2: 0 10px 30px rgba(60, 48, 20, 0.16), 0 2px 6px rgba(60, 48, 20, 0.1);
+    --checker-a: #ebe6d9;
+    --checker-b: #f7f4ec;
+  }
+}

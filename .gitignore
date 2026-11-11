@@ -1,0 +1,25 @@
+# build output
+/hoard
+/dist/
+/release/
+/THIRD_PARTY_NOTICES.md
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
+
+# local runtime data
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# secrets & editor noise
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+
+# Claude Code: session worktrees and personal settings
+.claude/worktrees/
+.claude/settings.local.json
