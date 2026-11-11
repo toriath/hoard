@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 // sidecarMatchesDB fails unless asset.json describes exactly what the index
@@ -122,4 +123,37 @@ func TestConcurrentMutationsOfOneAsset(t *testing.T) {
 	if after.FileCount != len(after.Files) || after.Primary() == nil {
 		t.Errorf("inconsistent after deletes: %d files, count %d, primary %q", len(after.Files), after.FileCount, after.PrimaryFileID)
 	}
+}
+
+// A busy thumbnail decoder must not keep the asset (or others sharing its
+// lock stripe) from being edited.
+func TestThumbnailWaitDoesNotHoldTheAssetLock(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	a := mustAsset(t, s, AssetInput{Name: ptr("Hero")}, "", nil)
+	s.thumbSem <- struct{}{} // the decoder is busy
+	added := make(chan error, 1)
+	go func() {
+		_, err := s.AddFile(ctx, a.ID, "hero.png", bytes.NewReader(pngBytes(t, 4, 4, color.White)), 0)
+		added <- err
+	}()
+	// AddFile is now parked on the decoder, or about to be; an edit must go through.
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.UpdateAsset(ctx, a.ID, AssetInput{Description: ptr("edited")})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("UpdateAsset blocked behind a thumbnail waiting for the decoder")
+	}
+	<-s.thumbSem
+	if err := <-added; err != nil {
+		t.Fatal(err)
+	}
+	sidecarMatchesDB(t, s, a.ID)
 }

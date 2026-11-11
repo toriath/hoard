@@ -103,7 +103,8 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 
 	// Only the bookkeeping is serialised per asset, not the upload above. The
 	// asset is read again under the lock: another change may have landed.
-	defer s.lockAssets(assetID)()
+	unlock := s.lockAssets(assetID)
+	defer unlock() // idempotent; also released before the thumbnail below
 	if a, err = s.GetAsset(ctx, assetID); err != nil {
 		return nil, err
 	}
@@ -216,7 +217,9 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 		return nil, err
 	}
 
-	// 4. Thumbnail from the primary image (best effort).
+	// 4. Thumbnail from the primary image (best effort). Not under the asset
+	// lock: it waits for the decoder and decodes.
+	unlock()
 	if makePrimary && decodableImage[ext(filename)] {
 		if err := s.thumbFromFile(ctx, assetID, dst); err != nil {
 			s.log.Debug("thumbnail", "asset", assetID, "file", filename, "err", err)
@@ -273,7 +276,8 @@ func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error 
 
 // SetPrimaryFile selects which file drives preview and thumbnail.
 func (s *Service) SetPrimaryFile(ctx context.Context, assetID, fileID string) error {
-	defer s.lockAssets(assetID)()
+	unlock := s.lockAssets(assetID)
+	defer unlock()
 	var filename string
 	err := s.db.QueryRowContext(ctx, `SELECT filename FROM asset_files WHERE id = ? AND asset_id = ?`, fileID, assetID).Scan(&filename)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -285,6 +289,7 @@ func (s *Service) SetPrimaryFile(ctx context.Context, assetID, fileID string) er
 	if _, err := s.db.ExecContext(ctx, `UPDATE assets SET primary_file_id = ?, updated_at = ? WHERE id = ?`, fileID, now(), assetID); err != nil {
 		return err
 	}
+	unlock() // the thumbnail waits for the decoder; do not hold the asset meanwhile
 	if decodableImage[ext(filename)] {
 		if err := s.thumbFromFile(ctx, assetID, filepath.Join(s.assetDir(assetID), "files", filename)); err != nil {
 			s.log.Debug("thumbnail", "asset", assetID, "err", err)
@@ -350,7 +355,6 @@ func (s *Service) SetThumbnail(ctx context.Context, assetID string, data []byte)
 	if !ValidAssetID(assetID) {
 		return fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
 	}
-	defer s.lockAssets(assetID)()
 	var one int
 	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM assets WHERE id = ?`, assetID).Scan(&one); err != nil {
 		return fmt.Errorf("asset %q: %w", assetID, ErrNotFound)

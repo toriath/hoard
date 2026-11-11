@@ -740,7 +740,9 @@ func (s *Service) Bulk(ctx context.Context, op BulkOp) (int, error) {
 	if op.Patch.Name != nil {
 		return 0, invalid("name cannot be set in bulk")
 	}
-	defer s.lockAssets(op.IDs...)()
+	// The locks cover the atomic database change only. Sidecars and removed
+	// directories follow after they are released (syncSidecar has its own lock).
+	unlock := s.lockAssets(op.IDs...)
 	ts := now()
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		for _, id := range op.IDs {
@@ -778,6 +780,7 @@ func (s *Service) Bulk(ctx context.Context, op BulkOp) (int, error) {
 		}
 		return nil
 	})
+	unlock()
 	if err != nil {
 		return 0, err
 	}
@@ -929,6 +932,7 @@ func (s *Service) assetLock(id string) *sync.Mutex {
 // assetLock, which syncSidecar takes inside; never call lockAssets while
 // holding assetLock. Do not hold it while streaming an upload.
 func (s *Service) lockAssets(ids ...string) (unlock func()) {
+	var once sync.Once
 	var stripes []int
 	for _, id := range ids {
 		h := fnv.New32a()
@@ -941,9 +945,11 @@ func (s *Service) lockAssets(ids ...string) (unlock func()) {
 		s.mutateMu[i].Lock()
 	}
 	return func() {
-		for _, i := range slices.Backward(stripes) {
-			s.mutateMu[i].Unlock()
-		}
+		once.Do(func() {
+			for _, i := range slices.Backward(stripes) {
+				s.mutateMu[i].Unlock()
+			}
+		})
 	}
 }
 
