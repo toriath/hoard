@@ -1,5 +1,5 @@
 import {
-  ArrowDownUp, Check, Download, FolderOpen, Gamepad2, LayoutGrid, List, Pause, Pencil, Play, RotateCcw, Search, SlidersHorizontal,
+  ArrowDownUp, Check, Copy, Download, FolderOpen, Gamepad2, LayoutGrid, List, Pause, Pencil, Play, RotateCcw, Search, SlidersHorizontal,
   Grid2x2, Sparkles, Trash2, Upload, X,
 } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -13,6 +13,7 @@ import type { Asset, AssetPatch, Filters } from '../lib/types'
 import { Button, Check as CheckBox, Chip, Dialog, Empty, Field, Menu, Spinner, TagInput, TypeBadge, cx, typeColor, typeIcon, useConfirm, useDebounced } from '../ui'
 import { AtlasDialog } from './AtlasDialog'
 import { CARD_STATUSES, STATUS_LABEL, StatusBadge } from '../ui/status'
+import { DuplicatesDialog } from './Duplicates'
 import { activeFilterCount, openAsset, readFilters, setFilters, type Scope } from './filters'
 import { useUpload } from './Upload'
 
@@ -229,6 +230,7 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
   }
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [filterOpen, setFilterOpen] = useState(false)
+  const [dupOpen, setDupOpen] = useState(false)
   const [bulkEdit, setBulkEdit] = useState(false)
   const [atlasOpen, setAtlasOpen] = useState(false)
   const anchor = useRef<string | null>(null)
@@ -401,6 +403,7 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
             { label: '', separator: true },
             { label: 'Grid view', icon: view === 'grid' ? Check : LayoutGrid, onSelect: () => chooseView('grid') },
             { label: 'List view', icon: view === 'list' ? Check : List, onSelect: () => chooseView('list') },
+            ...(scope.trashed ? [] : [{ label: '', separator: true }, { label: 'Find duplicates…', icon: Copy, onSelect: () => setDupOpen(true) }]),
           ]}
         />
         <div className="seg hide-sm" role="group" aria-label="View">
@@ -454,6 +457,12 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
           {filters.statuses.map((st) => (
             <Chip key={st} active onRemove={() => setFilters(loc, { statuses: filters.statuses.filter((x) => x !== st) })}>
               {st === 'none' ? 'Not reviewed' : STATUS_LABEL[st] ?? st}
+            </Chip>
+          ))}
+          {filters.colors.map((c) => (
+            <Chip key={c} active onRemove={() => setFilters(loc, { colors: filters.colors.filter((x) => x !== c) })}>
+              <span className="dot" style={{ background: '#' + c }} />
+              Colour #{c}
             </Chip>
           ))}
           {filters.license && (
@@ -588,6 +597,7 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
 
       {filterOpen && <FilterDialog filters={filters} scope={scope} onClose={() => setFilterOpen(false)} />}
       {atlasOpen && <AtlasDialog ids={ids} onClose={() => setAtlasOpen(false)} />}
+      {dupOpen && <DuplicatesDialog onClose={() => setDupOpen(false)} />}
       {bulkEdit && (
         <BulkEditDialog
           count={selected.size}
@@ -606,6 +616,15 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
 
 const STATUS_FILTERS: [string, string][] = [['none', 'Not reviewed'], ...Object.entries(STATUS_LABEL)]
 
+// The server maps any hex colour to the nearest of its palette colours; these
+// are one vivid representative per hue plus black, grey and white.
+const COLOR_SWATCHES = [
+  { name: 'Red', hex: 'f24d4d' }, { name: 'Orange', hex: 'f2994d' }, { name: 'Yellow', hex: 'f2f24d' }, { name: 'Lime', hex: '99f24d' },
+  { name: 'Green', hex: '4df24d' }, { name: 'Teal', hex: '4df299' }, { name: 'Cyan', hex: '4df2f2' }, { name: 'Sky blue', hex: '4d99f2' },
+  { name: 'Blue', hex: '4d4df2' }, { name: 'Purple', hex: '994df2' }, { name: 'Magenta', hex: 'f24df2' }, { name: 'Pink', hex: 'f24d99' },
+  { name: 'Black', hex: '101010' }, { name: 'Dark grey', hex: '404040' }, { name: 'Grey', hex: '808080' }, { name: 'Light grey', hex: 'c0c0c0' }, { name: 'White', hex: 'f0f0f0' },
+]
+
 function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Scope; onClose: () => void }) {
   const loc = useLocation()
   const [q, setQ] = useState('')
@@ -620,7 +639,7 @@ function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Sc
       width={520}
       footer={
         <>
-          <Button variant="ghost" onClick={() => setFilters(loc, { tags: [], statuses: [], license: '', untagged: false, project: scope.project ? undefined : '' })}>
+          <Button variant="ghost" onClick={() => setFilters(loc, { tags: [], statuses: [], colors: [], license: '', untagged: false, project: scope.project ? undefined : '' })}>
             Clear all
           </Button>
           <Button variant="primary" onClick={onClose}>
@@ -654,6 +673,23 @@ function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Sc
             ))}
           </div>
         </Field>
+        <div className="field">
+          <span className="label">Colour — pictures in which it is a main colour</span>
+          <div className="swatches" role="group" aria-label="Colour">
+            {COLOR_SWATCHES.map((c) => (
+              <button
+                key={c.hex}
+                type="button"
+                className="swatch"
+                style={{ background: '#' + c.hex }}
+                aria-pressed={filters.colors.includes(c.hex)}
+                aria-label={c.name}
+                title={c.name}
+                onClick={() => setFilters(loc, { colors: filters.colors.includes(c.hex) ? filters.colors.filter((x) => x !== c.hex) : [...filters.colors, c.hex] })}
+              />
+            ))}
+          </div>
+        </div>
         <div className="row-wrap">
           <CheckBox checked={filters.untagged} onChange={(v) => setFilters(loc, { untagged: v })}>
             Untagged only

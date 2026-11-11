@@ -51,6 +51,7 @@ type AddFileResult struct {
 	File        File     `json:"file"`
 	Replaced    bool     `json:"replaced,omitempty"`     // an existing file with the same name was overwritten
 	DuplicateOf []string `json:"duplicate_of,omitempty"` // other assets holding identical content
+	SimilarTo   []string `json:"similar_to,omitempty"`   // other assets whose picture is near-identical (perceptual hash)
 }
 
 // AddFile streams r into the asset's files directory. A file with the same
@@ -154,6 +155,7 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 	// 3. Index.
 	res := &AddFileResult{File: f}
 	makePrimary := false
+	hadPrimary := a.Primary() != nil
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		for _, id := range replaced {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM asset_files WHERE id = ?`, id); err != nil {
@@ -221,12 +223,14 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 		s.removeDerived(assetID)
 	}
 
-	// 4. Thumbnail from the primary image (best effort). Not under the asset
-	// lock: it waits for the decoder and decodes.
+	// 4. Preview of the primary file (best effort): a thumbnail from an image,
+	// or a waveform / font specimen when there is none yet. Images also yield
+	// a perceptual hash and dominant colours. Not under the asset lock: it
+	// waits for the decoder and decodes.
 	unlock()
-	if makePrimary && decodableImage[ext(filename)] {
-		if err := s.thumbFromFile(ctx, assetID, dst); err != nil {
-			s.log.Debug("thumbnail", "asset", assetID, "file", filename, "err", err)
+	if makePrimary {
+		if st := s.previewPrimary(ctx, assetID, f.ID, filename, dst, hadPrimary); st != nil && st.PHash != "" {
+			res.SimilarTo = s.nearAssets(ctx, st.PHash, assetID, NearIdenticalDistance, 10, res.DuplicateOf)
 		}
 	}
 	s.afterFileAdded(ctx, assetID, f, dst) // generator metadata import (genmeta.go)
@@ -244,8 +248,10 @@ func refreshAggregates(ctx context.Context, tx *sql.Tx, assetID string) error {
 
 // DeleteFile removes one file from an asset.
 func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error {
-	defer s.lockAssets(assetID)()
+	unlock := s.lockAssets(assetID)
+	defer unlock() // idempotent; released early before the preview below
 	var filename string
+	var wasPrimary bool
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, `SELECT filename FROM asset_files WHERE id = ? AND asset_id = ?`, fileID, assetID).Scan(&filename)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -254,8 +260,16 @@ func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error 
 		if err != nil {
 			return err
 		}
+		if err := tx.QueryRowContext(ctx, `SELECT primary_file_id = ? FROM assets WHERE id = ?`, fileID, assetID).Scan(&wasPrimary); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM asset_files WHERE id = ?`, fileID); err != nil {
 			return err
+		}
+		if wasPrimary { // the colours described the removed file
+			if _, err := tx.ExecContext(ctx, `DELETE FROM asset_colors WHERE asset_id = ?`, assetID); err != nil {
+				return err
+			}
 		}
 		// Re-point the primary file if it was the one removed.
 		if _, err := tx.ExecContext(ctx, `UPDATE assets SET primary_file_id = COALESCE(
@@ -276,6 +290,13 @@ func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error 
 		s.log.Warn("remove file", "asset", assetID, "file", filename, "err", err)
 	}
 	s.removeDerived(assetID)
+	unlock()        // the preview below waits for the decoder; do not hold the asset meanwhile
+	if wasPrimary { // a file took over as primary: its preview, hash and colours (best effort)
+		var nid, nname string
+		if err := s.db.QueryRowContext(ctx, `SELECT f.id, f.filename FROM assets a JOIN asset_files f ON f.id = a.primary_file_id WHERE a.id = ?`, assetID).Scan(&nid, &nname); err == nil {
+			s.previewPrimary(ctx, assetID, nid, nname, filepath.Join(s.assetDir(assetID), "files", nname), true)
+		}
+	}
 	s.syncSidecar(ctx, assetID)
 	return nil
 }
@@ -295,12 +316,8 @@ func (s *Service) SetPrimaryFile(ctx context.Context, assetID, fileID string) er
 	if _, err := s.db.ExecContext(ctx, `UPDATE assets SET primary_file_id = ?, updated_at = ? WHERE id = ?`, fileID, now(), assetID); err != nil {
 		return err
 	}
-	unlock() // the thumbnail waits for the decoder; do not hold the asset meanwhile
-	if decodableImage[ext(filename)] {
-		if err := s.thumbFromFile(ctx, assetID, filepath.Join(s.assetDir(assetID), "files", filename)); err != nil {
-			s.log.Debug("thumbnail", "asset", assetID, "err", err)
-		}
-	}
+	unlock() // the preview waits for the decoder; do not hold the asset meanwhile
+	s.previewPrimary(ctx, assetID, fileID, filename, filepath.Join(s.assetDir(assetID), "files", filename), true)
 	s.syncSidecar(ctx, assetID)
 	return nil
 }
@@ -346,13 +363,53 @@ func (s *Service) ThumbPath(assetID string) (path, mime string) {
 	return "", ""
 }
 
-func (s *Service) thumbFromFile(ctx context.Context, assetID, path string) error {
+// previewPrimary makes what the library shows for a new primary file: a
+// thumbnail (plus perceptual hash and colours) for a decodable image, a
+// waveform or font specimen for audio and fonts that have no thumbnail yet.
+// It returns the image statistics when there are any. Failures are logged:
+// a file without preview is still a valid asset. force says that the
+// primary file replaced another one (measured audio attributes are redone).
+func (s *Service) previewPrimary(ctx context.Context, assetID, fileID, filename, path string, force bool) *imageStats {
+	// The colours describe the primary file: drop those of the former one.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM asset_colors WHERE asset_id = ?`, assetID); err != nil {
+		s.log.Debug("clear colours", "asset", assetID, "err", err)
+	}
+	e := ext(filename)
+	switch {
+	case decodableImage[e]:
+		st, err := s.thumbFromFile(ctx, assetID, fileID, path)
+		if err != nil {
+			s.log.Debug("thumbnail", "asset", assetID, "file", filename, "err", err)
+		}
+		return st
+	case audioPreview[e]:
+		if err := s.audioPreviewFile(ctx, assetID, fileID, path, e, force); err != nil {
+			s.log.Debug("audio preview", "asset", assetID, "file", filename, "err", err)
+		}
+	case fontPreview[e]:
+		if err := s.fontPreviewFile(ctx, assetID, fileID, path); err != nil {
+			s.log.Debug("font preview", "asset", assetID, "file", filename, "err", err)
+		}
+	}
+	return nil
+}
+
+// thumbFromFile renders the thumbnail of an image file and records the
+// perceptual hash and colours of that same decoded image for file fileID.
+func (s *Service) thumbFromFile(ctx context.Context, assetID, fileID, path string) (*imageStats, error) {
 	fh, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer fh.Close()
-	return s.writeThumb(ctx, assetID, fh)
+	st, err := s.writeThumb(ctx, assetID, fh)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.storeImageStats(ctx, assetID, fileID, st); err != nil {
+		s.log.Debug("image statistics", "asset", assetID, "err", err)
+	}
+	return st, nil
 }
 
 // SetThumbnail stores a client-rendered preview (e.g. a 3D render, a video
@@ -365,7 +422,7 @@ func (s *Service) SetThumbnail(ctx context.Context, assetID string, data []byte)
 	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM assets WHERE id = ?`, assetID).Scan(&one); err != nil {
 		return fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
 	}
-	if err := s.writeThumb(ctx, assetID, bytes.NewReader(data)); err != nil {
+	if _, err := s.writeThumb(ctx, assetID, bytes.NewReader(data)); err != nil {
 		return invalid("thumbnail must be a PNG, JPEG, GIF, WebP or BMP image: %v", err)
 	}
 	s.syncSidecar(ctx, assetID)
@@ -385,29 +442,8 @@ func (s *Service) DeleteThumbnail(ctx context.Context, assetID string) error {
 	return err
 }
 
-func (s *Service) writeThumb(ctx context.Context, assetID string, r io.ReadSeeker) error {
-	select {
-	case s.thumbSem <- struct{}{}:
-		defer func() { <-s.thumbSem }()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
-	cfg, _, err := image.DecodeConfig(r)
-	if err != nil {
-		return err
-	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || decodedSize(cfg) > maxDecodedBytes {
-		return fmt.Errorf("image of %dx%d pixels is too large to make a thumbnail from", cfg.Width, cfg.Height)
-	}
-	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	src, _, err := image.Decode(r)
-	if err != nil {
-		return err
-	}
-
+// scaleToThumb scales an image down to the thumbnail size (never up).
+func scaleToThumb(src image.Image) *image.NRGBA {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 	if w > thumbSize || h > thumbSize {
@@ -425,10 +461,62 @@ func (s *Service) writeThumb(ctx context.Context, assetID string, r io.ReadSeeke
 	} else {
 		draw.CatmullRom.Scale(dst, dst.Bounds(), src, b, draw.Src, nil)
 	}
+	return dst
+}
 
+// decodeImage decodes an image within the memory budget. The caller must hold
+// the thumbSem slot.
+func decodeImage(r io.ReadSeeker) (image.Image, error) {
+	cfg, _, err := image.DecodeConfig(r)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 || decodedSize(cfg) > maxDecodedBytes {
+		return nil, fmt.Errorf("image of %dx%d pixels is too large to make a thumbnail from", cfg.Width, cfg.Height)
+	}
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	src, _, err := image.Decode(r)
+	return src, err
+}
+
+func (s *Service) acquireThumb(ctx context.Context) (release func(), err error) {
+	select {
+	case s.thumbSem <- struct{}{}:
+		return func() { <-s.thumbSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// writeThumb decodes an image (once), stores its thumbnail and returns the
+// perceptual hash and dominant colours computed from that same decode.
+func (s *Service) writeThumb(ctx context.Context, assetID string, r io.ReadSeeker) (*imageStats, error) {
+	release, err := s.acquireThumb(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	src, err := decodeImage(r)
+	if err != nil {
+		return nil, err
+	}
+	dst := scaleToThumb(src)
+	if err := s.putThumb(ctx, assetID, dst); err != nil {
+		return nil, err
+	}
+	return statsOf(dst), nil
+}
+
+// putThumb encodes and stores a thumbnail image and bumps the thumbnail version.
+func (s *Service) putThumb(ctx context.Context, assetID string, dst *image.NRGBA) error {
+	w, h := dst.Bounds().Dx(), dst.Bounds().Dy()
 	// Opaque pictures compress far better as JPEG; keep PNG for transparency
 	// and for small pixel art, where JPEG artefacts would be visible.
 	var buf bytes.Buffer
+	var err error
 	name := "thumb.png"
 	if dst.Opaque() && w*h > 128*128 {
 		name = "thumb.jpg"

@@ -267,6 +267,7 @@ type ListQuery struct {
 	Project    string   // project id, or "none" for assets not used in any project
 	License    string   // exact license, or "none" for assets without one
 	Statuses   []string // review status, any of ("none" matches "")
+	Colors     []string // hex colours; every one must be a dominant colour (see QuantizeColor)
 	Untagged   bool
 	Trashed    bool
 	IDs        []string // restrict to these ids
@@ -344,6 +345,17 @@ func (s *Service) ListAssets(ctx context.Context, q ListQuery) (*ListResult, err
 		}
 		where = append(where, `a.status IN (`+placeholders(len(sts))+`)`)
 		args = append(args, sts...)
+	}
+	if len(q.Colors) > MaxColorFilters {
+		return nil, invalid("at most %d colours can be searched at once", MaxColorFilters)
+	}
+	for _, c := range q.Colors {
+		bucket, err := QuantizeColor(c)
+		if err != nil {
+			return nil, err
+		}
+		where = append(where, `EXISTS (SELECT 1 FROM asset_colors ac WHERE ac.asset_id = a.id AND ac.color = ? AND ac.weight >= ?)`)
+		args = append(args, bucket, colorMatchWeight)
 	}
 	if q.Untagged {
 		where = append(where, `NOT EXISTS (SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id)`)

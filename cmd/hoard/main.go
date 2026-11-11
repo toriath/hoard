@@ -70,6 +70,24 @@ func run() error {
 	go agent.Run(ctx)
 	go housekeeping(ctx, svc, cfg, log)
 
+	// Derived data for assets stored before it existed (image hashes, colours,
+	// waveform and font thumbnails). Stopped by shutdown, awaited before the
+	// database closes.
+	backfilled := make(chan struct{})
+	bctx, stopBackfill := context.WithCancel(ctx)
+	go func() {
+		defer close(backfilled)
+		svc.RunBackfill(bctx)
+	}()
+	defer func() {
+		stopBackfill()
+		select {
+		case <-backfilled:
+		case <-time.After(10 * time.Second):
+			log.Warn("backfill did not stop in time")
+		}
+	}()
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           server.New(svc, agent, cfg, log, version, web.FS()),

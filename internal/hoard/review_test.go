@@ -151,7 +151,7 @@ func TestLoudnessSumsChannels(t *testing.T) {
 	dir := t.TempDir()
 	measure := func(name string, ch int) float64 {
 		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, wavBytes(48000, ch, 16, 48000*2, 0.5), 0o600); err != nil {
+		if err := os.WriteFile(p, fitWavBytes(48000, ch, 16, 48000*2, 0.5), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		info, err := AnalyzeAudio(context.Background(), p)
@@ -188,7 +188,7 @@ func TestReportNeverMeasuresOrWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	img := mustAsset(t, s, AssetInput{Name: ptr("img"), Type: ptr("sprite"), License: ptr("CC0-1.0"), AddProjects: []string{p.ID}}, "img.png", paletteImage(t, 8, 8, color.NRGBA{255, 0, 0, 255}))
-	snd := mustAsset(t, s, AssetInput{Name: ptr("snd"), Type: ptr("sfx"), License: ptr("CC0-1.0"), AddProjects: []string{p.ID}}, "snd.wav", wavBytes(44100, 1, 16, 4410, 0.5))
+	snd := mustAsset(t, s, AssetInput{Name: ptr("snd"), Type: ptr("sfx"), License: ptr("CC0-1.0"), AddProjects: []string{p.ID}}, "snd.wav", fitWavBytes(44100, 1, 16, 4410, 0.5))
 	// If anything tried to read the files, it would fail or fill the caches.
 	for _, a := range []*Asset{img, snd} {
 		if err := os.Remove(filepath.Join(s.assetDir(a.ID), "files", a.Files[0].Filename)); err != nil {
@@ -242,7 +242,7 @@ func TestStoredMeasurementsFollowTheFile(t *testing.T) {
 	if _, err := s.SaveProjectBrief(ctx, p.ID, rawPatch(t, `{"audio":{"sample_rate":48000}}`)); err != nil {
 		t.Fatal(err)
 	}
-	a := mustAsset(t, s, AssetInput{Name: ptr("snd"), Type: ptr("sfx"), License: ptr("CC0-1.0")}, "snd.wav", wavBytes(44100, 1, 16, 4410, 0.5))
+	a := mustAsset(t, s, AssetInput{Name: ptr("snd"), Type: ptr("sfx"), License: ptr("CC0-1.0")}, "snd.wav", fitWavBytes(44100, 1, 16, 4410, 0.5))
 	if _, err := s.CheckFit(ctx, a.ID, p.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestStoredMeasurementsFollowTheFile(t *testing.T) {
 		t.Fatalf("first measurement: %+v", got.Attrs)
 	}
 	// The file is replaced: the measurement follows it.
-	if _, err := s.AddFile(ctx, a.ID, "snd.wav", bytes.NewReader(wavBytes(22050, 2, 16, 2205, 0.25)), 0); err != nil {
+	if _, err := s.AddFile(ctx, a.ID, "snd.wav", bytes.NewReader(fitWavBytes(22050, 2, 16, 2205, 0.25)), 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.CheckFit(ctx, a.ID, p.ID); err != nil {
@@ -262,7 +262,7 @@ func TestStoredMeasurementsFollowTheFile(t *testing.T) {
 		t.Errorf("re-measurement: %+v", got.Attrs)
 	}
 	// A trashed asset is not touched.
-	b := mustAsset(t, s, AssetInput{Name: ptr("gone"), Type: ptr("sfx"), License: ptr("CC0-1.0")}, "gone.wav", wavBytes(44100, 1, 16, 4410, 0.5))
+	b := mustAsset(t, s, AssetInput{Name: ptr("gone"), Type: ptr("sfx"), License: ptr("CC0-1.0")}, "gone.wav", fitWavBytes(44100, 1, 16, 4410, 0.5))
 	if _, err := s.Bulk(ctx, BulkOp{IDs: []string{b.ID}, Action: "trash"}); err != nil {
 		t.Fatal(err)
 	}

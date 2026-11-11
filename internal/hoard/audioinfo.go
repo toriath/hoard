@@ -49,11 +49,11 @@ func AnalyzeAudio(ctx context.Context, path string) (*AudioInfo, error) {
 	}
 	switch ext(path) {
 	case ".wav":
-		return analyzeWAV(ctx, f, st.Size())
+		return fit_analyzeWAV(ctx, f, st.Size())
 	case ".ogg", ".oga", ".opus":
-		return analyzeOgg(f)
+		return fit_analyzeOgg(f)
 	case ".flac":
-		return analyzeFLAC(f)
+		return fit_analyzeFLAC(f)
 	}
 	return nil, errors.New("format not supported by the audio checker")
 }
@@ -65,7 +65,7 @@ func toDB(v float64) float64 {
 	return math.Max(dbfsFloor, 20*math.Log10(v))
 }
 
-func analyzeWAV(ctx context.Context, f *os.File, size int64) (*AudioInfo, error) {
+func fit_analyzeWAV(ctx context.Context, f *os.File, size int64) (*AudioInfo, error) {
 	br := bufio.NewReaderSize(f, 64<<10)
 	var head [12]byte
 	if _, err := io.ReadFull(br, head[:]); err != nil || string(head[0:4]) != "RIFF" || string(head[8:12]) != "WAVE" {
@@ -226,7 +226,7 @@ func measureWAV(ctx context.Context, r io.Reader, n int64, info *AudioInfo, tag,
 	}
 }
 
-func analyzeOgg(f *os.File) (*AudioInfo, error) {
+func fit_analyzeOgg(f *os.File) (*AudioInfo, error) {
 	head := make([]byte, 512)
 	n, _ := io.ReadFull(f, head)
 	head = head[:n]
@@ -244,7 +244,7 @@ func analyzeOgg(f *os.File) (*AudioInfo, error) {
 	return nil, errors.New("Ogg stream is neither Vorbis nor Opus")
 }
 
-func analyzeFLAC(f *os.File) (*AudioInfo, error) {
+func fit_analyzeFLAC(f *os.File) (*AudioInfo, error) {
 	var b [4 + 4 + 34]byte
 	if _, err := io.ReadFull(f, b[:]); err != nil || string(b[0:4]) != "fLaC" || b[4]&0x7f != 0 {
 		return nil, errors.New("FLAC STREAMINFO block not found")

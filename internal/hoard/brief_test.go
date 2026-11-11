@@ -129,8 +129,8 @@ func TestBriefValidationAndMerge(t *testing.T) {
 
 }
 
-// wavBytes builds a PCM WAV file with a constant-amplitude sine.
-func wavBytes(rate, channels, bits, frames int, amp float64) []byte {
+// fitWavBytes builds a PCM WAV file with a constant-amplitude sine.
+func fitWavBytes(rate, channels, bits, frames int, amp float64) []byte {
 	block := channels * bits / 8
 	var data bytes.Buffer
 	for i := range frames {
@@ -304,7 +304,7 @@ func TestFitAudio(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 1 s of a half-scale sine at 44.1 kHz mono: peak about -6 dBFS, RMS about -9 dBFS.
-	snd := mustAsset(t, s, AssetInput{Name: ptr("beep"), Type: ptr("sfx"), License: ptr("CC0-1.0")}, "beep.wav", wavBytes(44100, 1, 16, 44100, 0.5))
+	snd := mustAsset(t, s, AssetInput{Name: ptr("beep"), Type: ptr("sfx"), License: ptr("CC0-1.0")}, "beep.wav", fitWavBytes(44100, 1, 16, 44100, 0.5))
 	updated := snd.UpdatedAt
 	is, err := s.CheckFit(ctx, snd.ID, p.ID)
 	if err != nil {
@@ -359,7 +359,7 @@ func TestFitAudio(t *testing.T) {
 	}
 
 	// Loud and clipping music at the right sample rate: peak and loudness warnings.
-	loud := mustAsset(t, s, AssetInput{Name: ptr("loud"), Type: ptr("music"), License: ptr("CC0-1.0")}, "loud.wav", wavBytes(48000, 2, 16, 48000, 1.0))
+	loud := mustAsset(t, s, AssetInput{Name: ptr("loud"), Type: ptr("music"), License: ptr("CC0-1.0")}, "loud.wav", fitWavBytes(48000, 2, 16, 48000, 1.0))
 	is, _ = s.CheckFit(ctx, loud.ID, p.ID)
 	c = codes(is)
 	if c["peak"].Severity != "warning" || !strings.Contains(c["peak"].Message, "clips") {
@@ -377,7 +377,7 @@ func TestFitAudio(t *testing.T) {
 	}
 
 	// A silent file has no loudness to compare; a truncated one does not crash.
-	silent := mustAsset(t, s, AssetInput{Name: ptr("silence"), Type: ptr("music"), License: ptr("CC0-1.0")}, "silence.wav", wavBytes(48000, 2, 16, 48000, 0))
+	silent := mustAsset(t, s, AssetInput{Name: ptr("silence"), Type: ptr("music"), License: ptr("CC0-1.0")}, "silence.wav", fitWavBytes(48000, 2, 16, 48000, 0))
 	is, _ = s.CheckFit(ctx, silent.ID, p.ID)
 	if _, ok := codes(is)["loudness"]; ok {
 		t.Errorf("loudness of silence: %+v", is)
@@ -402,7 +402,7 @@ func TestAudioHeaders(t *testing.T) {
 		return p
 	}
 	// 24-bit stereo with an odd-sized chunk before data.
-	w := wavBytes(96000, 2, 24, 960, 0.25)
+	w := fitWavBytes(96000, 2, 24, 960, 0.25)
 	w = append(append([]byte{}, w[:36]...), append([]byte("LIST\x03\x00\x00\x00abc\x00"), w[36:]...)...)
 	info, err := AnalyzeAudio(context.Background(), write("a.wav", w))
 	if err != nil || info.SampleRate != 96000 || info.Channels != 2 || info.BitDepth != 24 || !info.Measured || math.Abs(info.PeakDBFS+12) > 0.2 {
