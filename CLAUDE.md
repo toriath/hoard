@@ -51,12 +51,13 @@ These came out of a security review. Do not weaken them without a reason written
 
 Covered by tests or checked in a real deployment: the web UI, MCP from a real client including uploads over signed links, the container on TrueNAS SCALE, access through a reverse proxy.
 
+Generator metadata import (`internal/hoard/genmeta.go`) is tested with synthetic PNGs and sidecars written from the documented formats, not with files from the real tools. The Automatic1111 `parameters` layout and the ComfyUI `prompt` graph are well known; the Draw Things reader is a tolerant guess (a JSON object with `c`, `uc`, `seed`, `steps`, `scale`, `sampler`, `model`, `size`, as a whole text chunk or inside the XMP `exif:UserComment`) and the audio-studio sidecar reader assumes `prompt`, `seed` and optionally `settings`, `audio_type`, `duration`. Treat all of these as unverified until checked against real files.
+
 Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Do not describe these as working.
 
 ## Known gaps
 
 - No password reset. An account is only created through first-run setup, `HOARD_ADMIN_*` (when no user exists) or another signed-in user. Until the first account exists, anyone who can reach the port can create it.
-- Tag rename/merge exists in the core, REST and MCP but has no screen in the web UI.
 - Thumbnails for audio, video, fonts, 3D models and image formats the server cannot decode are rendered by the browser (`web/src/lib/thumbs.ts`). Assets added only over MCP have none until the library is opened once, and the AI agent has no image for them before that.
 - Links handed to agents are built from the request's `Host` (`Server.BaseURL`), which is not validated. A proxy that rewrites `Host` produces wrong links; `HOARD_PUBLIC_URL` overrides it globally.
 - Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket. There is no trusted-proxy setting.

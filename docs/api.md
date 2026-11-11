@@ -76,6 +76,16 @@ curl -H "Authorization: Bearer $HOARD_TOKEN" \
 
 Membership is changed through asset patches (`add_collections`, `add_projects`, …), single or bulk.
 
+## Activity, lineage and recipes
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /activity?asset=&since=&after=&action=&via=&limit=` | The change feed. `since` is an RFC 3339 time; `after` is a sequence number and returns only newer entries, oldest first, so a client can follow the last `seq` it saw. `action` and `via` take comma-separated lists: action prefixes such as `asset.`, `request.`, `asset.review`, `note.`, `project.`, and channels `web`, `api`, `mcp`, `system`. `limit` defaults to 50, at most 500. Without `after` the newest entries come first. Returns `{ "items": [...], "latest_seq": n }`; each item has `seq`, `at`, `actor`, `via`, `action`, `asset_id`, `ref_id`, `summary`, and `asset_name` and `thumb_version` while the asset exists (`asset_gone` when it was purged). `latest_seq` is the newest entry overall, also when the filter matched nothing |
+| `GET /assets/{id}/lineage` | `{ ancestors, children, siblings, supersedes, superseded_by_chain }`: compact asset records (`id`, `name`, `type`, `status`, `thumb_version`, `prompt`, `generator`). `ancestors` follows `derived_from` (nearest first, at most 20, cycle-safe); `children` and `siblings` skip trashed assets |
+| `GET /assets/{id}/recipe` | Prompt, `generator`, the `derived_from` chain, `variations`, `has_recipe` and a `reproduce` hint |
+
+Entries older than 365 days are pruned by the daily maintenance.
+
 ## Accounts and settings
 
 | Method & path | Purpose |

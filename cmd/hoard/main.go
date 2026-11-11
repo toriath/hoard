@@ -105,6 +105,12 @@ func housekeeping(ctx context.Context, svc *hoard.Service, cfg config.Config, lo
 		if err := svc.Backup(ctx, cfg.BackupKeep); err != nil {
 			log.Warn("backup", "err", err)
 		}
+		cutoff := time.Now().UTC().AddDate(0, 0, -hoard.ActivityRetentionDays).Format(time.RFC3339)
+		if n, err := svc.PruneActivity(ctx, cutoff); err != nil {
+			log.Warn("activity cleanup", "err", err)
+		} else if n > 0 {
+			log.Info("pruned old activity entries", "entries", n)
+		}
 		if cfg.TrashDays > 0 {
 			cutoff := time.Now().UTC().AddDate(0, 0, -cfg.TrashDays).Format(time.RFC3339)
 			if n, err := svc.PurgeExpiredTrash(ctx, cutoff); err != nil {
