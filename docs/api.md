@@ -76,6 +76,18 @@ curl -H "Authorization: Bearer $HOARD_TOKEN" \
 
 Membership is changed through asset patches (`add_collections`, `add_projects`, …), single or bulk.
 
+## Project briefs, fit, report, credits
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /projects/{id}/brief` | The brief (`{}` when none). Also present as `brief` on the project |
+| `PATCH /projects/{id}/brief` | Merge a JSON object into the brief: fields present replace, `null` clears, absent fields stay. `400` with the reason when validation fails |
+| `GET /projects/{id}/report` | Health report: `verdict` (`ok`, `attention`, `problems`), `summary`, license problems, missing attribution, placeholders, assets needing work, fit issues, size against budget, open requests, `repo_drift` (only with a repository snapshot) |
+| `GET /projects/{id}/credits` | `{ "markdown", "asset_count", "needs_attention": [...] }` |
+| `GET /projects/{id}/credits.md` | The same Markdown as `text/markdown`, as an attachment named `CREDITS.md` |
+| `GET /projects/{id}/bundle` | Zip: one folder per asset (files and `asset.json`) plus `CREDITS.md`; rejected and superseded assets left out |
+| `POST /assets/{id}/fit` | Fit check. Body `{ "project_id": "…" }` for one project, empty for every project the asset is used in. Returns `{ "reports": [{ "project_id", "project_name", "has_brief", "errors", "warnings", "issues": [{ "severity", "code", "message" }] }] }`. A `POST` because it stores measured audio attributes when absent |
+
 ## Accounts and settings
 
 | Method & path | Purpose |
@@ -98,8 +110,9 @@ MCP tools hand out links that need no token and expire after two hours:
 - `PUT /upload/{assetId}/{filename}?exp=…&sig=…`
 - `GET /dl/{assetId}/{filename}?exp=…&sig=…`
 - `GET /dl-zip?ids=…&exp=…&sig=…`
+- `GET /dl-bundle/{projectId}?exp=…&sig=…`: the project bundle (assets and `CREDITS.md`)
 
-A signature is bound to its expiry and to one file name of one asset (or, for a zip, to one exact list of assets). Upload links cannot write into a trashed asset. Revoking the API token that requested a link does not revoke the link.
+A signature is bound to its expiry and to one file name of one asset (for a zip, to one exact list of assets; for a bundle, to one project). Upload links cannot write into a trashed asset. Revoking the API token that requested a link does not revoke the link.
 
 ## Other endpoints
 

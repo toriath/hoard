@@ -55,6 +55,8 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 
 ## Known gaps
 
+- Project briefs, fit checks, reports and credits have only been exercised with generated PNG and WAV files and hand-built Ogg/FLAC headers, not with files from real encoders. The audio "loudness" is an RMS-based estimate, not LUFS; peak and loudness exist for PCM WAV only. The palette check decodes whole images (one at a time, within `maxDecodedBytes`); results are cached in memory by content hash.
+- A fit check (a POST) stores measured audio attributes in an asset when absent, without bumping `updated_at` or recording activity. The project report (a GET) never writes.
 - No password reset. An account is only created through first-run setup, `HOARD_ADMIN_*` (when no user exists) or another signed-in user. Until the first account exists, anyone who can reach the port can create it.
 - Tag rename/merge exists in the core, REST and MCP but has no screen in the web UI.
 - Thumbnails for audio, video, fonts, 3D models and image formats the server cannot decode are rendered by the browser (`web/src/lib/thumbs.ts`). Assets added only over MCP have none until the library is opened once, and the AI agent has no image for them before that.

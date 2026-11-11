@@ -435,14 +435,28 @@ var compressedExt = map[string]bool{
 	".zip": true, ".glb": true, ".woff": true, ".woff2": true, ".ktx2": true, ".usdz": true,
 }
 
+// zipFile is a generated file added to the root of an archive.
+type zipFile struct {
+	Name string
+	Data []byte
+}
+
 // writeZip streams an archive. With folders, every asset gets its own
 // directory containing its files and its asset.json metadata.
-func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, name string, assets []*hoard.Asset, folders bool) error {
+func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, name string, assets []*hoard.Asset, folders bool, extra ...zipFile) error {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	used := map[string]bool{}
+	for _, x := range extra { // generated files at the archive root, e.g. CREDITS.md
+		used[x.Name] = true
+		xw, err := zw.CreateHeader(&zip.FileHeader{Name: x.Name, Method: zip.Deflate, Modified: time.Now()})
+		if err != nil {
+			return nil
+		}
+		_, _ = xw.Write(x.Data)
+	}
 	for _, a := range assets {
 		prefix := ""
 		if folders {

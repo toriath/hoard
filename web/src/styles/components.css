@@ -535,7 +535,7 @@ a.chip:hover {
   display: flex;
   flex-direction: column;
   width: min(100%, var(--dialog-w, 480px));
-  max-height: min(100%, 860px);
+  max-height: min(calc(100dvh - 2 * var(--sp-4)), 860px);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
   background: var(--surface-1);
@@ -811,4 +811,117 @@ a.chip:hover {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---------- brief area: project brief, health, fit findings ---------- */
+.stack-tight {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.brief-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--sp-3);
+}
+.brief-grid-2 {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.brief-panel .card-head h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+.brief-row {
+  display: contents;
+}
+.brief-text {
+  white-space: pre-wrap;
+}
+.swatches {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  vertical-align: middle;
+}
+.swatch {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+.palette-edit {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--sp-2);
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.swatch-input {
+  flex: none;
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.sev {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+}
+.sev-error {
+  color: var(--danger);
+}
+.sev-warning {
+  color: var(--warning);
+}
+.sev-info {
+  color: var(--info);
+}
+.sev-ok {
+  color: var(--success);
+}
+.fit {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.fit > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  cursor: pointer;
+  min-height: var(--control-h);
+}
+.fit-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-1) var(--sp-3) var(--sp-3);
+  list-style: none;
+}
+.fit-list li {
+  display: flex;
+  gap: var(--sp-2);
+  overflow-wrap: anywhere;
+}
+.fit-msg {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.progress > i.over {
+  background: var(--danger);
+}
+.credits-md {
+  max-height: 50vh;
 }
