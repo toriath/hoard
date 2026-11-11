@@ -1,5 +1,5 @@
 import { Download, FileQuestion, Pause, Play } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { fileDownloadUrl, rawUrl } from '../lib/api'
 import { stopPreview } from '../lib/audio'
 import { formatBytes, formatDuration } from '../lib/format'
@@ -25,14 +25,8 @@ export function Preview({ asset, file }: { asset: Asset; file: AssetFile | undef
   }
   const url = rawUrl(asset.id, file.filename)
   switch (file.kind) {
-    case 'image': {
-      const sheet = parseSprite(asset.attrs, file)
-      return sheet ? (
-        <SpritePreview key={url} url={url} sheet={sheet} sheetView={<ImagePreview url={url} file={file} />} />
-      ) : (
-        <ImagePreview key={url} url={url} file={file} />
-      )
-    }
+    case 'image':
+      return <ImageOrSheet key={url} url={url} file={file} attrs={asset.attrs} />
     case 'audio':
       return <AudioPlayer key={url} url={url} file={file} color={typeColor(asset.type)} />
     case 'video':
@@ -62,6 +56,17 @@ export function Preview({ asset, file }: { asset: Asset; file: AssetFile | undef
         </div>
       )
   }
+}
+
+/** A sprite sheet plays; any other image is shown as is. */
+function ImageOrSheet({ url, file, attrs }: { url: string; file: AssetFile; attrs: Asset['attrs'] }) {
+  // Keyed on the content, not the object: a refetched asset with the same
+  // attributes must not restart a paused or scrubbed animation.
+  const key = JSON.stringify(attrs)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const sheet = useMemo(() => parseSprite(attrs, file), [key, file.width, file.height])
+  const still = <ImagePreview url={url} file={file} />
+  return sheet ? <SpritePreview url={url} sheet={sheet} sheetView={still} /> : still
 }
 
 function ImagePreview({ url, file }: { url: string; file: AssetFile }) {

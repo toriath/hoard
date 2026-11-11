@@ -37,12 +37,13 @@ export function SpritePreview({ url, sheet, sheetView }: { url: string; sheet: S
   }, [url])
 
   // Changing the animation restarts it.
-  useEffect(() => setFrame(range.first), [range])
+  useEffect(() => setFrame(range.first), [anim, range.first, range.last])
+  useEffect(() => setFps(sheet.fps), [sheet.fps])
 
   // The clock. Frame changes are driven by elapsed time, not by a timer per
   // frame, so a busy tab drops frames instead of running slow.
   useEffect(() => {
-    if (!playing || !image) return
+    if (!playing || !image || showSheet) return
     let raf = 0
     let last = performance.now()
     let acc = 0
@@ -69,7 +70,7 @@ export function SpritePreview({ url, sheet, sheetView }: { url: string; sheet: S
     }
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
-  }, [playing, image, fps, range, sheet.loop])
+  }, [playing, image, showSheet, fps, range.first, range.last, sheet.loop])
 
   const pixel = isPixelArt(sheet)
   useEffect(() => {

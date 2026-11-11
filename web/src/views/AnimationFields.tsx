@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { formatAnimationLines, parseAnimationLines } from '../lib/sprite'
+import { MAX_FPS, formatAnimationLines, parseAnimationLines } from '../lib/sprite'
 import { Check, Field } from '../ui'
 
 /** The sprite-sheet attributes as the edit form holds them (text, so partial input is possible). */
@@ -34,16 +34,20 @@ export function animationPatch(before: Record<string, unknown>, draft: Animation
   const patch: Record<string, unknown> = {}
   for (const k of ['frame_width', 'frame_height', 'columns', 'frames', 'fps'] as const) {
     const raw = draft[k].trim()
-    const next = raw === '' ? null : Number(raw)
-    if (next !== null && (!Number.isInteger(next) || next < 1 || next > 65536)) return { patch, error: `${k.replace('_', ' ')} must be a whole number of at least 1` }
+    let next = raw === '' ? null : Number(raw)
     const prev = typeof before[k] === 'number' ? before[k] : null
+    // A stored value that is not valid by today's rules (7.5 fps) must not
+    // block unrelated edits: only fields that were changed are checked.
+    if (next === prev) continue
+    if (next !== null && (!Number.isInteger(next) || next < 1 || next > 65536)) return { patch, error: `${k.replace('_', ' ')} must be a whole number of at least 1` }
+    if (k === 'fps' && next !== null) next = Math.min(next, MAX_FPS)
     if (next !== prev) patch[k] = next
   }
   if (draft.loop !== (before.loop !== false)) patch.loop = draft.loop
-  const parsed = parseAnimationLines(draft.animations)
-  if (parsed.errors.length) return { patch, error: `Cannot read animation line "${parsed.errors[0]}" (write name: first-last)` }
   if (draft.animations.trim() !== formatAnimationLines(before.animations).trim()) {
-    patch.animations = Object.keys(parsed.value).length ? parsed.value : null
+    const parsed = parseAnimationLines(draft.animations)
+    if (parsed.errors.length) return { patch, error: `Cannot read animation line "${parsed.errors[0]}" (write name: first-last)` }
+    patch.animations = Object.keys(parsed.value).length ? { ...parsed.value } : null
   }
   return { patch }
 }

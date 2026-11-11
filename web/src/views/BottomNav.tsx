@@ -28,6 +28,7 @@ export function BottomNav({ items, path }: { items: NavItem[]; path: string }) {
           <span>{n.label}</span>
         </a>
       ))}
+      {more.length > 0 && (
       <Menu
         align="right"
         trigger={(p) => (
@@ -38,6 +39,7 @@ export function BottomNav({ items, path }: { items: NavItem[]; path: string }) {
         )}
         items={more.map((n) => ({ label: n.label, icon: n.icon, onSelect: () => navigate(n.to) }))}
       />
+      )}
     </nav>
   )
 }

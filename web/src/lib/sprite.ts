@@ -109,7 +109,8 @@ export function isPixelArt(s: SpriteSheet): boolean {
 
 /** Reads "walk: 0-5" (or "walk: 3", or "walk 0 5") per line; unreadable lines are returned in errors. */
 export function parseAnimationLines(text: string): { value: Record<string, [number, number]>; errors: string[] } {
-  const value: Record<string, [number, number]> = {}
+  // No prototype: a line named "__proto__" or "constructor" is just a name.
+  const value: Record<string, [number, number]> = Object.create(null)
   const errors: string[] = []
   for (const raw of text.split('\n')) {
     const line = raw.trim()
