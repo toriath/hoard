@@ -309,25 +309,25 @@ func abs(n int) int {
 	return n
 }
 
-type atlasSource struct {
-	assetID, name string
-	img           image.Image
+// atlasSem allows one atlas build at a time: a build holds the canvas and the
+// encoded PNG, up to several hundred MB, so parallel signed fetches must queue.
+var atlasSem = make(chan struct{}, 1)
+
+type atlasItem struct {
+	assetID, name, filename string
+	w, h                    int
 }
 
-// PackAtlas packs the primary images of the given assets. Only formats the
-// server can decode (PNG, JPEG, GIF, WebP, BMP, TIFF) are accepted.
-func (s *Service) PackAtlas(ctx context.Context, ids []string, o AtlasOptions) (*Atlas, error) {
-	o, err := o.Normalize()
-	if err != nil {
-		return nil, err
-	}
+// atlasItems validates the assets and reads their image sizes without
+// decoding any pixels, within the decode limits.
+func (s *Service) atlasItems(ctx context.Context, ids []string, o AtlasOptions) ([]atlasItem, error) {
 	if len(ids) == 0 {
 		return nil, invalid("ids is required")
 	}
 	if len(ids) > maxAtlasAssets {
 		return nil, invalid("at most %d assets per atlas", maxAtlasAssets)
 	}
-	var srcs []atlasSource
+	var items []atlasItem
 	var total int64
 	usedNames := map[string]bool{}
 	for _, id := range ids {
@@ -342,9 +342,16 @@ func (s *Service) PackAtlas(ctx context.Context, ids []string, o AtlasOptions) (
 		if f == nil || !decodableImage[ext(f.Filename)] {
 			return nil, invalid("asset %s (%s) has no PNG, JPEG, GIF, WebP, BMP or TIFF primary file", id, a.Name)
 		}
-		img, err := s.decodeLimited(ctx, id, f.Filename, &total)
+		cfg, err := s.imageConfig(ctx, id, f.Filename)
 		if err != nil {
 			return nil, invalid("asset %s (%s): %v", id, a.Name, err)
+		}
+		size := decodedSize(cfg)
+		if cfg.Width <= 0 || cfg.Height <= 0 || size > maxDecodedBytes {
+			return nil, invalid("asset %s (%s): image of %dx%d pixels is too large", id, a.Name, cfg.Width, cfg.Height)
+		}
+		if total += size; total > maxAtlasSourceBytes {
+			return nil, invalid("the sources together exceed the decode budget of %d MiB; pack fewer or smaller images", maxAtlasSourceBytes>>20)
 		}
 		name := nameStem(a.Name)
 		if name == "" || name == "file" {
@@ -355,40 +362,105 @@ func (s *Service) PackAtlas(ctx context.Context, ids []string, o AtlasOptions) (
 			name = fmt.Sprintf("%s_%d", base, n)
 		}
 		usedNames[strings.ToLower(name)] = true
-		srcs = append(srcs, atlasSource{assetID: id, name: name, img: img})
+		items = append(items, atlasItem{assetID: id, name: name, filename: f.Filename, w: cfg.Width, h: cfg.Height})
 	}
+	return items, nil
+}
 
+func (s *Service) imageConfig(ctx context.Context, assetID, filename string) (image.Config, error) {
+	fh, _, err := s.OpenFile(ctx, assetID, filename)
+	if err != nil {
+		return image.Config{}, err
+	}
+	defer fh.Close()
+	cfg, _, err := image.DecodeConfig(fh)
+	if err != nil {
+		return cfg, fmt.Errorf("cannot read image: %v", err)
+	}
+	return cfg, nil
+}
+
+// layoutAtlas places the items and returns their frames (without pixel data).
+func layoutAtlas(items []atlasItem, o AtlasOptions) ([]packRect, *Atlas, error) {
 	e, pad := o.Extrude, o.Padding
-	sizes := make([][2]int, len(srcs))
-	for i, sr := range srcs {
-		b := sr.img.Bounds()
-		sizes[i] = [2]int{b.Dx() + 2*e + pad, b.Dy() + 2*e + pad}
+	sizes := make([][2]int, len(items))
+	for i, it := range items {
+		sizes[i] = [2]int{it.w + 2*e + pad, it.h + 2*e + pad}
 	}
 	pos, w, h, err := packLayout(sizes, o)
 	if err != nil {
+		return nil, nil, err
+	}
+	if decodedSize(image.Config{Width: w, Height: h}) > maxDecodedBytes {
+		return nil, nil, invalid("the atlas would be too large to build")
+	}
+	atlas := &Atlas{Width: w, Height: h, Options: o}
+	for i, it := range items {
+		atlas.Frames = append(atlas.Frames, AtlasFrame{Name: it.name, AssetID: it.assetID, X: pos[i].x + e, Y: pos[i].y + e, W: it.w, H: it.h})
+	}
+	return pos, atlas, nil
+}
+
+// PlanAtlas computes the layout only: frames and size, without decoding any
+// pixels or building the texture. The result has no PNG.
+func (s *Service) PlanAtlas(ctx context.Context, ids []string, o AtlasOptions) (*Atlas, error) {
+	o, err := o.Normalize()
+	if err != nil {
 		return nil, err
 	}
-	if cfg := (image.Config{Width: w, Height: h}); decodedSize(cfg) > maxDecodedBytes {
-		return nil, invalid("the atlas would be too large to build")
+	items, err := s.atlasItems(ctx, ids, o)
+	if err != nil {
+		return nil, err
 	}
+	_, atlas, err := layoutAtlas(items, o)
+	return atlas, err
+}
 
-	canvas := image.NewNRGBA(image.Rect(0, 0, w, h))
-	atlas := &Atlas{Width: w, Height: h, Options: o}
-	for i, sr := range srcs {
-		b := sr.img.Bounds()
+// PackAtlas packs the primary images of the given assets. Only formats the
+// server can decode (PNG, JPEG, GIF, WebP, BMP, TIFF) are accepted. Builds are
+// serialised; sources are decoded one at a time and dropped after drawing.
+func (s *Service) PackAtlas(ctx context.Context, ids []string, o AtlasOptions) (*Atlas, error) {
+	o, err := o.Normalize()
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case atlasSem <- struct{}{}:
+		defer func() { <-atlasSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	items, err := s.atlasItems(ctx, ids, o)
+	if err != nil {
+		return nil, err
+	}
+	pos, atlas, err := layoutAtlas(items, o)
+	if err != nil {
+		return nil, err
+	}
+	e := o.Extrude
+	canvas := image.NewNRGBA(image.Rect(0, 0, atlas.Width, atlas.Height))
+	for i, it := range items {
+		img, err := s.decodeOne(ctx, it.assetID, it.filename)
+		if err != nil {
+			return nil, invalid("asset %s: %v", it.assetID, err)
+		}
+		b := img.Bounds()
 		sw, sh := b.Dx(), b.Dy()
+		if sw != it.w || sh != it.h {
+			return nil, invalid("asset %s changed while packing", it.assetID)
+		}
 		x0, y0 := pos[i].x+e, pos[i].y+e
-		draw.Draw(canvas, image.Rect(x0, y0, x0+sw, y0+sh), sr.img, b.Min, draw.Src)
+		draw.Draw(canvas, image.Rect(x0, y0, x0+sw, y0+sh), img, b.Min, draw.Src)
 		for dy := -e; dy < sh+e; dy++ {
 			for dx := -e; dx < sw+e; dx++ {
 				if dx >= 0 && dx < sw && dy >= 0 && dy < sh {
 					continue
 				}
 				cx, cy := min(max(dx, 0), sw-1), min(max(dy, 0), sh-1)
-				canvas.Set(x0+dx, y0+dy, sr.img.At(b.Min.X+cx, b.Min.Y+cy))
+				canvas.Set(x0+dx, y0+dy, img.At(b.Min.X+cx, b.Min.Y+cy))
 			}
 		}
-		atlas.Frames = append(atlas.Frames, AtlasFrame{Name: sr.name, AssetID: sr.assetID, X: x0, Y: y0, W: sw, H: sh})
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, canvas); err != nil {
@@ -398,9 +470,8 @@ func (s *Service) PackAtlas(ctx context.Context, ids []string, o AtlasOptions) (
 	return atlas, nil
 }
 
-// decodeLimited decodes one stored image under the global decode lock. total
-// accumulates the estimated decoded size of all sources.
-func (s *Service) decodeLimited(ctx context.Context, assetID, filename string, total *int64) (image.Image, error) {
+// decodeOne decodes one stored image under the global decode lock.
+func (s *Service) decodeOne(ctx context.Context, assetID, filename string) (image.Image, error) {
 	select {
 	case s.thumbSem <- struct{}{}:
 		defer func() { <-s.thumbSem }()
@@ -416,12 +487,8 @@ func (s *Service) decodeLimited(ctx context.Context, assetID, filename string, t
 	if err != nil {
 		return nil, fmt.Errorf("cannot read image: %v", err)
 	}
-	size := decodedSize(cfg)
-	if cfg.Width <= 0 || cfg.Height <= 0 || size > maxDecodedBytes {
+	if decodedSize(cfg) > maxDecodedBytes {
 		return nil, fmt.Errorf("image of %dx%d pixels is too large", cfg.Width, cfg.Height)
-	}
-	if *total+size > maxAtlasSourceBytes {
-		return nil, fmt.Errorf("the sources together exceed the decode budget of %d MiB; pack fewer or smaller images", maxAtlasSourceBytes>>20)
 	}
 	if _, err := fh.Seek(0, io.SeekStart); err != nil {
 		return nil, err
@@ -430,7 +497,6 @@ func (s *Service) decodeLimited(ctx context.Context, assetID, filename string, t
 	if err != nil {
 		return nil, fmt.Errorf("cannot decode image: %v", err)
 	}
-	*total += size
 	return img, nil
 }
 

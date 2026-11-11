@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -140,7 +141,7 @@ func (s *Service) EngineHints(ctx context.Context, ids []string, o HintsOptions)
 			ah.Files = append(ah.Files, fh)
 		}
 		if res.Engine == "godot" {
-			if name, tres, note := spriteFramesTres(a, o.ResDir); tres != "" {
+			if name, tres, note := spriteFramesTres(a, o.ResDir, brief.Naming); tres != "" {
 				ah.SpriteFramesName, ah.SpriteFrames = name, tres
 			} else if note != "" {
 				ah.Notes = append(ah.Notes, note)
@@ -365,7 +366,7 @@ var reAnimName = regexp.MustCompile(`[^A-Za-z0-9_\- ]+`)
 // spriteFramesTres builds a Godot 4 SpriteFrames resource for a sprite sheet
 // with frame attributes. It returns the file name, the text and, when no
 // resource can be made, a note explaining why.
-func spriteFramesTres(a *Asset, resDir string) (name, tres, note string) {
+func spriteFramesTres(a *Asset, resDir, naming string) (name, tres, note string) {
 	fw, ok1 := deliveryAttrNum(a.Attrs, "frame_width")
 	fh, ok2 := deliveryAttrNum(a.Attrs, "frame_height")
 	if !ok1 || !ok2 || fw < 1 || fh < 1 {
@@ -403,6 +404,7 @@ func spriteFramesTres(a *Asset, resDir string) (name, tres, note string) {
 		first, last int
 	}
 	var anims []anim
+	usedNames := map[string]bool{}
 	if m, ok := a.Attrs["animations"].(map[string]any); ok {
 		names := make([]string, 0, len(m))
 		for k := range m {
@@ -420,7 +422,13 @@ func spriteFramesTres(a *Asset, resDir string) (name, tres, note string) {
 			if !ok0 || !ok1 || clean == "" || int(f0) < 0 || int(f1) < int(f0) || int(f1) >= total {
 				continue
 			}
-			anims = append(anims, anim{clean[:min(len(clean), 64)], int(f0), int(f1)})
+			clean = clean[:min(len(clean), 64)]
+			base := clean
+			for n := 2; usedNames[clean]; n++ {
+				clean = fmt.Sprintf("%s_%d", base, n)
+			}
+			usedNames[clean] = true
+			anims = append(anims, anim{clean, int(f0), int(f1)})
 		}
 	}
 	if len(anims) == 0 {
@@ -442,7 +450,11 @@ func spriteFramesTres(a *Asset, resDir string) (name, tres, note string) {
 	if resDir == "" {
 		resDir = "res://"
 	}
-	texPath := strings.TrimRight(resDir, "/") + "/" + SanitizeFilename(p.Filename)
+	if !strings.HasSuffix(resDir, "/") {
+		resDir += "/"
+	}
+	// The file name sync_project gives the image when the brief names a convention.
+	texPath := resDir + ApplyNaming(p.Filename, naming)
 	var b strings.Builder
 	fmt.Fprintf(&b, "[gd_resource type=\"SpriteFrames\" load_steps=%d format=3]\n\n", len(idxs)+2)
 	fmt.Fprintf(&b, "[ext_resource type=\"Texture2D\" path=\"%s\" id=\"1_sheet\"]\n\n", texPath)
@@ -462,7 +474,7 @@ func spriteFramesTres(a *Asset, resDir string) (name, tres, note string) {
 			}
 			fmt.Fprintf(&b, "{\n\"duration\": 1.0,\n\"texture\": SubResource(\"AtlasTexture_%d\")\n}", i)
 		}
-		fmt.Fprintf(&b, "],\n\"loop\": %t,\n\"name\": &\"%s\",\n\"speed\": %g\n}", loop, an.name, fps)
+		fmt.Fprintf(&b, "],\n\"loop\": %t,\n\"name\": &\"%s\",\n\"speed\": %s\n}", loop, an.name, godotFloat(fps))
 	}
 	b.WriteString("]\n")
 
@@ -471,4 +483,13 @@ func spriteFramesTres(a *Asset, resDir string) (name, tres, note string) {
 		base = strings.TrimSuffix(p.Filename, ext(p.Filename))
 	}
 	return base + ".tres", b.String(), ""
+}
+
+// godotFloat prints a number the way Godot writes floats: always with a decimal point.
+func godotFloat(f float64) string {
+	v := strconv.FormatFloat(f, 'f', -1, 64)
+	if !strings.Contains(v, ".") {
+		v += ".0"
+	}
+	return v
 }

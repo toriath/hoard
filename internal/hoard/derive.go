@@ -22,7 +22,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"time"
 
 	"golang.org/x/image/draw"
 )
@@ -195,92 +197,198 @@ func (s *Service) derivedDir(assetID string) string {
 	return filepath.Join(s.dataDir, "cache", "derived", assetID)
 }
 
-// Derive returns the path of the cached derivative of one stored file,
-// rendering it first when needed. The file name is resolved through the index.
-func (s *Service) Derive(ctx context.Context, assetID, filename string, o DeriveOptions) (path, mime string, err error) {
-	o, err = o.Normalize()
+// derivedCacheMaxPixels: larger results are streamed from a temporary file
+// instead of being cached. Variable so that tests can shrink it.
+var derivedCacheMaxPixels = 16_000_000
+
+const (
+	// derivedMemBudget bounds source plus result pixels held at once.
+	derivedMemBudget = 512 << 20
+)
+
+// derivedCacheBudget is the most disk the derivative cache may use. Variable
+// so that tests can shrink it.
+var derivedCacheBudget int64 = 1 << 30
+
+// DerivedFile is a rendered derivative. Close it after serving: a Temp file is
+// deleted, a cached one stays.
+type DerivedFile struct {
+	Path string
+	Mime string
+	Temp bool
+}
+
+// Close removes a temporary derivative.
+func (d *DerivedFile) Close() {
+	if d != nil && d.Temp {
+		_ = os.Remove(d.Path)
+	}
+}
+
+// Derive renders (or finds in the cache) a derivative of one stored file.
+// The file name is resolved through the index; trashed assets are refused.
+func (s *Service) Derive(ctx context.Context, assetID, filename string, o DeriveOptions) (*DerivedFile, error) {
+	o, err := o.Normalize()
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	if !ValidAssetID(assetID) {
-		return "", "", fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
+		return nil, fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
 	}
 	if !decodableImage[ext(filename)] {
-		return "", "", invalid("%s is not an image the server can decode (PNG, JPEG, GIF, WebP, BMP, TIFF)", filename)
+		return nil, invalid("%s is not an image the server can decode (PNG, JPEG, GIF, WebP, BMP, TIFF)", filename)
+	}
+	var trashed bool
+	if err := s.db.QueryRowContext(ctx, `SELECT deleted_at IS NOT NULL FROM assets WHERE id = ?`, assetID).Scan(&trashed); err != nil {
+		return nil, fmt.Errorf("asset %q: %w", assetID, ErrNotFound)
+	}
+	if trashed {
+		return nil, invalid("asset %s is in the trash; restore it first", assetID)
 	}
 	fh, f, err := s.OpenFile(ctx, assetID, filename)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	defer fh.Close()
 	sum := sha256.Sum256([]byte(o.Payload() + "|" + f.SHA256))
 	dir := s.derivedDir(assetID)
-	path = filepath.Join(dir, hex.EncodeToString(sum[:16])+o.DeriveExt())
-	mime = "image/png"
+	cached := filepath.Join(dir, hex.EncodeToString(sum[:16])+o.DeriveExt())
+	mime := "image/png"
 	if o.Format == "jpeg" {
 		mime = "image/jpeg"
 	}
-	if _, err := os.Stat(path); err == nil {
-		return path, mime, nil
+	hit := func() bool {
+		if _, err := os.Stat(cached); err != nil {
+			return false
+		}
+		now := time.Now()
+		_ = os.Chtimes(cached, now, now) // recently used entries are evicted last
+		return true
+	}
+	if hit() {
+		return &DerivedFile{Path: cached, Mime: mime}, nil
 	}
 
 	select {
 	case s.thumbSem <- struct{}{}:
 		defer func() { <-s.thumbSem }()
 	case <-ctx.Done():
-		return "", "", ctx.Err()
+		return nil, ctx.Err()
 	}
-	if _, err := os.Stat(path); err == nil { // rendered while we waited
-		return path, mime, nil
+	if hit() { // rendered while we waited
+		return &DerivedFile{Path: cached, Mime: mime}, nil
 	}
 	cfg, _, err := image.DecodeConfig(fh)
 	if err != nil {
-		return "", "", invalid("cannot read image: %v", err)
+		return nil, invalid("cannot read image: %v", err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || decodedSize(cfg) > maxDecodedBytes {
-		return "", "", invalid("image of %dx%d pixels is too large to scale", cfg.Width, cfg.Height)
+		return nil, invalid("image of %dx%d pixels is too large to scale", cfg.Width, cfg.Height)
 	}
 	ow, oh, err := o.DeriveSize(cfg.Width, cfg.Height)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
-	if decodedSize(image.Config{Width: ow, Height: oh}) > maxDecodedBytes {
-		return "", "", invalid("the result would be too large to render")
+	if decodedSize(cfg)+decodedSize(image.Config{Width: ow, Height: oh}) > derivedMemBudget {
+		return nil, invalid("source and result together would need too much memory (%dx%d to %dx%d)", cfg.Width, cfg.Height, ow, oh)
 	}
 	if _, err := fh.Seek(0, io.SeekStart); err != nil {
-		return "", "", err
+		return nil, err
 	}
 	src, _, err := image.Decode(fh)
 	if err != nil {
-		return "", "", invalid("cannot decode image: %v", err)
+		return nil, invalid("cannot decode image: %v", err)
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, ow, oh))
 	var scaler draw.Interpolator = draw.BiLinear
 	if o.Filter == "nearest" {
 		scaler = draw.NearestNeighbor
 	}
-	scaler.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
-
 	var buf bytes.Buffer
 	if o.Format == "jpeg" {
-		// JPEG has no alpha: composite over white.
-		flat := image.NewNRGBA(dst.Bounds())
-		draw.Draw(flat, flat.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
-		draw.Draw(flat, flat.Bounds(), dst, image.Point{}, draw.Over)
-		err = jpeg.Encode(&buf, flat, &jpeg.Options{Quality: o.Quality})
+		// JPEG has no alpha: scale straight onto a white canvas.
+		draw.Draw(dst, dst.Bounds(), image.NewUniform(color.White), image.Point{}, draw.Src)
+		scaler.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: o.Quality})
 	} else {
+		scaler.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Src, nil)
 		err = png.Encode(&buf, dst)
 	}
 	if err != nil {
-		return "", "", err
+		return nil, err
+	}
+	if ow*oh > derivedCacheMaxPixels {
+		tmp, err := os.CreateTemp(filepath.Join(s.dataDir, "tmp"), "derive-*"+o.DeriveExt())
+		if err != nil {
+			return nil, err
+		}
+		_, werr := tmp.Write(buf.Bytes())
+		if cerr := tmp.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			_ = os.Remove(tmp.Name())
+			return nil, werr
+		}
+		return &DerivedFile{Path: tmp.Name(), Mime: mime, Temp: true}, nil
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", "", err
+		return nil, err
 	}
-	if err := writeFileAtomic(path, buf.Bytes()); err != nil {
-		return "", "", err
+	if err := writeFileAtomic(cached, buf.Bytes()); err != nil {
+		return nil, err
 	}
-	return path, mime, nil
+	s.evictDerived(cached)
+	return &DerivedFile{Path: cached, Mime: mime}, nil
+}
+
+// evictDerived keeps the cache within derivedCacheBudget by deleting the
+// least recently used entries; keep is never deleted.
+func (s *Service) evictDerived(keep string) {
+	root := filepath.Join(s.dataDir, "cache", "derived")
+	type entry struct {
+		path string
+		size int64
+		at   time.Time
+	}
+	var all []entry
+	var total int64
+	dirs, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, d := range dirs {
+		if !d.IsDir() || !ValidAssetID(d.Name()) {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(root, d.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			info, err := f.Info()
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			all = append(all, entry{filepath.Join(root, d.Name(), f.Name()), info.Size(), info.ModTime()})
+			total += info.Size()
+		}
+	}
+	if total <= derivedCacheBudget {
+		return
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
+	for _, e := range all {
+		if total <= derivedCacheBudget {
+			break
+		}
+		if e.path == keep {
+			continue
+		}
+		if os.Remove(e.path) == nil {
+			total -= e.size
+		}
+	}
 }
 
 // removeDerived deletes the cached derivatives of a purged asset.

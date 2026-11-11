@@ -158,11 +158,13 @@ func (s *Server) handleSignedDerive(w http.ResponseWriter, r *http.Request) erro
 	if err != nil || !s.svc.Verify("derive:"+id+":"+filename+":"+opts.Payload(), q.Get("exp"), q.Get("sig")) {
 		return &apiError{http.StatusForbidden, "forbidden", "derivative link is invalid or has expired; request a new one"}
 	}
-	path, mimeType, err := s.svc.Derive(r.Context(), id, filename, opts)
+	df, err := s.svc.Derive(r.Context(), id, filename, opts)
 	if err != nil {
 		return err
 	}
-	fh, err := os.Open(path)
+	defer df.Close()
+	mimeType := df.Mime
+	fh, err := os.Open(df.Path)
 	if err != nil {
 		return err
 	}

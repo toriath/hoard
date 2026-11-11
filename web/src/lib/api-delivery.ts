@@ -1,4 +1,4 @@
-import { get, seg } from './api'
+import { ApiError, get, seg } from './api'
 import type { AtlasOptions, RepoAudit } from './types-delivery'
 
 export const deliveryApi = {
@@ -19,4 +19,24 @@ export const deliveryApi = {
     })
     return `/api/v1/atlas/pack?${q}`
   },
+}
+
+/** Fetches the atlas zip; errors carry the server's message. */
+export async function fetchAtlas(ids: string[], o: AtlasOptions): Promise<Blob> {
+  let res: Response
+  try {
+    res = await fetch(deliveryApi.atlasUrl(ids, o), { credentials: 'same-origin' })
+  } catch {
+    throw new ApiError(0, 'network', 'Cannot reach the hoard server')
+  }
+  if (!res.ok) {
+    let message = res.statusText || 'Packing failed'
+    try {
+      message = (await res.json()).error?.message ?? message
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(res.status, 'error', message)
+  }
+  return res.blob()
 }

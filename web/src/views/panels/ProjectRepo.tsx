@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, ClipboardCopy, Download, RefreshCw } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { deliveryApi } from '../../lib/api-delivery'
-import { formatBytes, plural, timeAgo } from '../../lib/format'
+import { copyText, formatBytes, plural, timeAgo } from '../../lib/format'
 import { link } from '../../lib/router'
 import { toast, toastError, useQuery } from '../../lib/store'
 import type { Project } from '../../lib/types'
@@ -22,8 +22,8 @@ export function RepoPanel({ project }: { project: Project }) {
     setBusy(true)
     try {
       const r = await deliveryApi.auditCommand(project.id, root.trim() || '.')
-      await navigator.clipboard.writeText(r.command)
-      toast('Audit command copied. Run it in the game repository.')
+      if (await copyText(r.command)) toast('Audit command copied. Run it in the game repository.')
+      else toastError(new Error('Could not copy to the clipboard. Ask your agent to call get_repo_audit_command instead.'))
     } catch (e) {
       toastError(e)
     } finally {

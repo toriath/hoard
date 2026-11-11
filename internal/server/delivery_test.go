@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	_ "modernc.org/sqlite"
 
 	"github.com/toriath/hoard/internal/hoard"
 )
@@ -196,7 +198,7 @@ func TestRepoSnapshotLinks(t *testing.T) {
 		Command string `json:"command"`
 	}
 	e.do("GET", "/api/v1/projects/"+p1.ID+"/repo/audit-command?root=%2Ftmp%2Fmy%20game", nil, nil, http.StatusOK, &ac)
-	if !strings.Contains(ac.Command, "cd '/tmp/my game'") {
+	if !strings.Contains(ac.Command, "cd -- '/tmp/my game'") {
 		t.Errorf("audit-command root: %s", ac.Command)
 	}
 	e.do("GET", "/api/v1/projects/prj_missing/repo/audit", nil, nil, http.StatusNotFound, nil)
@@ -416,3 +418,115 @@ func TestDeliveryToolsListed(t *testing.T) {
 }
 
 func dlvPtr[T any](v T) *T { return &v }
+
+func needShell(t *testing.T) {
+	t.Helper()
+	for _, bin := range []string{"sh", "curl", "find", "grep"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("%s not available", bin)
+		}
+	}
+}
+
+// TestAuditCommandOddNames runs the command with a root that starts with a
+// dash and files whose names the snapshot cannot hold.
+func TestAuditCommandOddNames(t *testing.T) {
+	needShell(t)
+	e := newEnv(t)
+	m := newDlvMCP(t, e)
+	p, _ := e.svc.SaveProject(context.Background(), "", hoard.GroupInput{Name: dlvPtr("g")})
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "-repo")
+	for name, data := range map[string]string{"art/ok.png": "png", "art/tab\tname.png": "x", "art/bell\a.png": "y", "art/new\nline.png": "z", "art/-lead.png": "w"} {
+		full := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(data), 0o644); err != nil {
+			t.Skipf("filesystem refuses the name %q: %v", name, err)
+		}
+	}
+	// Directories named like pruned ones are skipped at the top only.
+	for _, n := range []string{"build/top.png", "src/build/deep.png"} {
+		full := filepath.Join(repo, n)
+		_ = os.MkdirAll(filepath.Dir(full), 0o755)
+		_ = os.WriteFile(full, []byte("b"+n), 0o644)
+	}
+	cmd := m.call("get_repo_audit_command", map[string]any{"project_id": p.ID, "root": "-repo"})["command"].(string)
+	sh := exec.Command("sh", "-c", cmd)
+	sh.Dir = parent
+	out, err := sh.CombinedOutput()
+	if err != nil {
+		t.Fatalf("command failed: %v\n%s", err, out)
+	}
+	a, err := e.svc.AuditProject(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, u := range a.Unknown {
+		got = append(got, u.Path)
+	}
+	if strings.Join(got, "|") != "art/-lead.png|art/ok.png|src/build/deep.png" {
+		t.Errorf("snapshot paths = %v (output %s)", got, out)
+	}
+}
+
+// TestSyncCommandsAreSafe checks the generated download commands in a shell
+// with a hostile folder name, and that an existing file is not overwritten.
+func TestSyncCommandsAreSafe(t *testing.T) {
+	needShell(t)
+	e := newEnv(t)
+	m := newDlvMCP(t, e)
+	ctx := context.Background()
+	p, _ := e.svc.SaveProject(ctx, "", hoard.GroupInput{Name: dlvPtr("g")})
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(e.svc.DataDir(), "hoard.db")+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	folder := "-it's `touch PWNED` $HOME \"q\""
+	brief, _ := json.Marshal(map[string]any{"folders": map[string]string{"sprite": folder}})
+	if _, err := db.Exec(`UPDATE projects SET brief = ? WHERE id = ?`, string(brief), p.ID); err != nil {
+		t.Fatal(err)
+	}
+	a := e.upload("hero.png", dlvPNG(5, 5, color.RGBA{4, 4, 4, 255}), `{"name":"hero"}`)
+	if _, err := e.svc.UpdateAsset(ctx, a.ID, hoard.AssetInput{AddProjects: []string{p.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	plan := m.call("sync_project", map[string]any{"project_id": p.ID, "root": repo})
+	dls := plan["downloads"].([]any)
+	if len(dls) != 1 {
+		t.Fatalf("plan = %v", plan)
+	}
+	cmd := dls[0].(map[string]any)["command"].(string)
+	run := func() string {
+		sh := exec.Command("sh", "-c", cmd)
+		sh.Dir = repo
+		out, err := sh.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v\n%s\n%s", err, out, cmd)
+		}
+		return string(out)
+	}
+	run()
+	target := filepath.Join(repo, folder, "hero.png")
+	if b, err := os.ReadFile(target); err != nil || !bytes.Equal(b, dlvPNG(5, 5, color.RGBA{4, 4, 4, 255})) {
+		t.Fatalf("file not written at %q: %v", target, err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "PWNED")); err == nil {
+		t.Fatal("shell injection through the folder name")
+	}
+	// A second run must not clobber local edits.
+	if err := os.WriteFile(target, []byte("local edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := run(); !strings.Contains(out, "skip:") {
+		t.Errorf("no skip message: %q", out)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "local edit" {
+		t.Error("existing file overwritten")
+	}
+	m.fails("sync_project", map[string]any{"project_id": p.ID, "root": "~/game"})
+}

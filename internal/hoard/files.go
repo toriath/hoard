@@ -206,6 +206,10 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 		return nil, err
 	}
 
+	if res.Replaced { // derivatives of the old content are stale
+		s.removeDerived(assetID)
+	}
+
 	// 4. Thumbnail from the primary image (best effort).
 	if makePrimary && decodableImage[ext(filename)] {
 		if err := s.thumbFromFile(ctx, assetID, dst); err != nil {
@@ -256,6 +260,7 @@ func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error 
 	if err := os.Remove(filepath.Join(s.assetDir(assetID), "files", filename)); err != nil && !os.IsNotExist(err) {
 		s.log.Warn("remove file", "asset", assetID, "file", filename, "err", err)
 	}
+	s.removeDerived(assetID)
 	s.syncSidecar(ctx, assetID)
 	return nil
 }

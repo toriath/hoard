@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func dlvProject(t *testing.T, s *Service, name, brief string) *Project {
@@ -51,7 +52,7 @@ func dlvLine(sha string, size int, p string) string { return fmt.Sprintf("%s\t%d
 func TestRepoSnapshotParsing(t *testing.T) {
 	sha := strings.Repeat("ab", 32)
 	good := dlvLine(sha, 12, "art/hero.png")
-	files, err := ParseRepoSnapshot(strings.NewReader(good + "\n" + dlvLine(strings.ToUpper(sha), 0, "a b/ü.ogg") + "\r\n"))
+	files, _, err := ParseRepoSnapshot(strings.NewReader(good + "\n" + dlvLine(strings.ToUpper(sha), 0, "a b/ü.ogg") + "\r\n"))
 	if err != nil || len(files) != 2 || files[1].SHA256 != sha || files[1].Path != "a b/ü.ogg" {
 		t.Fatalf("good snapshot: %v %+v", err, files)
 	}
@@ -62,9 +63,6 @@ func TestRepoSnapshotParsing(t *testing.T) {
 		"drive":         dlvLine(sha, 1, "C:/x.png"),
 		"dot segment":   dlvLine(sha, 1, "a/./b.png"),
 		"empty segment": dlvLine(sha, 1, "a//b.png"),
-		"nul":           dlvLine(sha, 1, "a\x00b.png"),
-		"control":       dlvLine(sha, 1, "a\x07b.png"),
-		"bad utf8":      dlvLine(sha, 1, "a\xffb.png"),
 		"too long":      dlvLine(sha, 1, strings.Repeat("a", 1025)),
 		"short sha":     dlvLine("abcd", 1, "a.png"),
 		"non-hex sha":   dlvLine(strings.Repeat("zz", 32), 1, "a.png"),
@@ -75,12 +73,12 @@ func TestRepoSnapshotParsing(t *testing.T) {
 		"duplicate":     good + "\n" + good,
 	}
 	for name, in := range bad {
-		if _, err := ParseRepoSnapshot(strings.NewReader(in)); err == nil {
+		if _, _, err := ParseRepoSnapshot(strings.NewReader(in)); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
 	// Whole upload rejected on one bad line.
-	if _, err := ParseRepoSnapshot(strings.NewReader(good + "\n" + dlvLine(sha, 1, "../x"))); err == nil {
+	if _, _, err := ParseRepoSnapshot(strings.NewReader(good + "\n" + dlvLine(sha, 1, "../x"))); err == nil {
 		t.Error("snapshot with one bad line accepted")
 	}
 	// Limits.
@@ -88,10 +86,10 @@ func TestRepoSnapshotParsing(t *testing.T) {
 	for i := 0; i <= maxSnapshotLines; i++ {
 		many.WriteString(dlvLine(sha, 1, fmt.Sprintf("f/%d.png", i)) + "\n")
 	}
-	if _, err := ParseRepoSnapshot(strings.NewReader(many.String())); err == nil {
+	if _, _, err := ParseRepoSnapshot(strings.NewReader(many.String())); err == nil {
 		t.Error("more than 50000 lines accepted")
 	}
-	if _, err := ParseRepoSnapshot(strings.NewReader(strings.Repeat("x", maxSnapshotBytes+1))); err == nil {
+	if _, _, err := ParseRepoSnapshot(strings.NewReader(strings.Repeat("x", maxSnapshotBytes+1))); err == nil {
 		t.Error("oversize snapshot accepted")
 	}
 }
@@ -457,15 +455,15 @@ func TestAtlasAndDeriveDecodeLimits(t *testing.T) {
 	if _, err := s.PackAtlas(ctx, []string{huge.ID}, AtlasOptions{}); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Errorf("huge image packed: %v", err)
 	}
-	if _, _, err := s.Derive(ctx, huge.ID, "huge.png", DeriveOptions{Scale: 0.5}); err == nil {
+	if _, err := s.Derive(ctx, huge.ID, "huge.png", DeriveOptions{Scale: 0.5}); err == nil {
 		t.Error("huge image derived")
 	}
 
-	// The decode budget over all sources: eight images of 36 MB decoded each.
-	big := dlvSolid(t, 3000, 3000, color.RGBA{9, 9, 9, 255})
+	// The decode budget over all sources: only headers are read, so declared
+	// sizes are enough (5 x 64 MiB decoded > 256 MiB).
 	var ids []string
-	for i := range 8 {
-		a := mustAsset(t, s, AssetInput{Name: ptr(fmt.Sprintf("big%d", i))}, "big.png", big)
+	for i := range 5 {
+		a := mustAsset(t, s, AssetInput{Name: ptr(fmt.Sprintf("big%d", i))}, "big.png", hugePNG(4096, 4096))
 		ids = append(ids, a.ID)
 	}
 	if _, err := s.PackAtlas(ctx, ids, AtlasOptions{MaxSize: 8192}); err == nil || !strings.Contains(err.Error(), "decode budget") {
@@ -497,10 +495,11 @@ func TestDerive(t *testing.T) {
 		t.Error("default filter rules")
 	}
 
-	p, mime, err := s.Derive(ctx, a.ID, "two.png", DeriveOptions{Scale: 3, Filter: "nearest"})
-	if err != nil || mime != "image/png" {
+	df, err := s.Derive(ctx, a.ID, "two.png", DeriveOptions{Scale: 3, Filter: "nearest"})
+	if err != nil || df.Mime != "image/png" {
 		t.Fatal(err)
 	}
+	p := df.Path
 	if !strings.HasPrefix(p, filepath.Join(s.DataDir(), "cache", "derived", a.ID)) {
 		t.Errorf("cache path %s", p)
 	}
@@ -513,26 +512,26 @@ func TestDerive(t *testing.T) {
 		t.Errorf("nearest blended: %v %v", r, b)
 	}
 	// Cached: same path, and no re-render needed.
-	p2, _, err := s.Derive(ctx, a.ID, "two.png", DeriveOptions{Scale: 3, Filter: "nearest"})
-	if err != nil || p2 != p {
-		t.Errorf("cache miss: %s vs %s", p2, p)
+	d2, err := s.Derive(ctx, a.ID, "two.png", DeriveOptions{Scale: 3, Filter: "nearest"})
+	if err != nil || d2.Path != p {
+		t.Errorf("cache miss: %v vs %s", d2, p)
 	}
 	// Width only keeps the ratio; jpeg works.
-	p3, mime, err := s.Derive(ctx, a.ID, "two.png", DeriveOptions{Width: 8, Format: "jpeg", Filter: "linear"})
-	if err != nil || mime != "image/jpeg" || !strings.HasSuffix(p3, ".jpg") {
-		t.Fatalf("jpeg: %v %s", err, p3)
+	d3, err := s.Derive(ctx, a.ID, "two.png", DeriveOptions{Width: 8, Format: "jpeg", Filter: "linear"})
+	if err != nil || d3.Mime != "image/jpeg" || !strings.HasSuffix(d3.Path, ".jpg") {
+		t.Fatalf("jpeg: %v %+v", err, d3)
 	}
 	for _, bad := range []DeriveOptions{{}, {Scale: 2, Width: 4}, {Width: 9000}, {Scale: 5000}, {Width: 4, Filter: "cubic"}, {Width: 4, Format: "webp"}, {Width: 4, Format: "jpeg", Quality: 200}} {
-		if _, _, err := s.Derive(ctx, a.ID, "two.png", bad); err == nil {
+		if _, err := s.Derive(ctx, a.ID, "two.png", bad); err == nil {
 			t.Errorf("options %+v accepted", bad)
 		}
 	}
 	// A result larger than the edge cap is refused before rendering.
-	if _, _, err := s.Derive(ctx, a.ID, "two.png", DeriveOptions{Scale: 4000, Filter: "nearest"}); err == nil {
+	if _, err := s.Derive(ctx, a.ID, "two.png", DeriveOptions{Scale: 4000, Filter: "nearest"}); err == nil {
 		t.Error("oversize result accepted")
 	}
 	// File names are resolved through the index.
-	if _, _, err := s.Derive(ctx, a.ID, "../../hoard.db", DeriveOptions{Width: 2}); err == nil {
+	if _, err := s.Derive(ctx, a.ID, "../../hoard.db", DeriveOptions{Width: 2}); err == nil {
 		t.Error("arbitrary path accepted")
 	}
 
@@ -612,4 +611,208 @@ func TestEngineHints(t *testing.T) {
 	if _, err := s.EngineHints(ctx, []string{sheet.ID}, HintsOptions{Engine: "godot", ResDir: `res://a"b`}); err == nil {
 		t.Error("bad res_dir accepted")
 	}
+}
+
+func TestSnapshotSkipsUnstorableNames(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	in := strings.Join([]string{
+		dlvLine(sha, 1, "ok.png"), dlvLine(sha, 1, "a\x07b.png"), dlvLine(sha, 1, "a\xffb.png"),
+		dlvLine(sha, 1, "tab\tname.png"), dlvLine(sha, 1, "nul\x00.png"),
+	}, "\n")
+	files, skipped, err := ParseRepoSnapshot(strings.NewReader(in))
+	if err != nil || len(files) != 1 || skipped != 4 {
+		t.Fatalf("files %v skipped %d err %v", files, skipped, err)
+	}
+	// Only unstorable names: empty, rejected.
+	if _, _, err := ParseRepoSnapshot(strings.NewReader(dlvLine(sha, 1, "a\x07.png"))); err == nil {
+		t.Error("snapshot of only skipped names accepted")
+	}
+	s := newService(t)
+	p := dlvProject(t, s, "g", "")
+	res, err := s.ReplaceRepoSnapshot(context.Background(), p.ID, strings.NewReader(in))
+	if err != nil || res.Files != 1 || res.Skipped != 4 {
+		t.Errorf("summary = %+v %v", res, err)
+	}
+}
+
+func TestSpriteFramesTexturePathAndNames(t *testing.T) {
+	mk := func(naming string) *Asset {
+		return &Asset{Name: "Hero", Attrs: map[string]any{"frame_width": 8.0, "frame_height": 8.0, "fps": 10.0,
+			"animations": map[string]any{"run!": []any{0.0, 1.0}, "run?": []any{2.0, 3.0}}},
+			Files: []File{{ID: "f", Filename: "HeroSheet.png", Width: 16, Height: 16}}, PrimaryFileID: "f"}
+	}
+	for dir, want := range map[string]string{"": `path="res://HeroSheet.png"`, "res://": `path="res://HeroSheet.png"`, "res://art/": `path="res://art/HeroSheet.png"`, "res://art": `path="res://art/HeroSheet.png"`} {
+		_, tres, _ := spriteFramesTres(mk(""), dir, "")
+		if !strings.Contains(tres, want) {
+			t.Errorf("res_dir %q: want %s in\n%s", dir, want, tres)
+		}
+	}
+	_, tres, _ := spriteFramesTres(mk(""), "res://art", "snake_case")
+	for _, w := range []string{`path="res://art/hero_sheet.png"`, `"speed": 10.0`, `&"run_"`, `&"run__2"`} {
+		if !strings.Contains(tres, w) {
+			t.Errorf("missing %s in\n%s", w, tres)
+		}
+	}
+}
+
+func TestSupersedeCycleTerminates(t *testing.T) {
+	s := newService(t)
+	ctx := context.Background()
+	p := dlvProject(t, s, "g", "")
+	a := mustAsset(t, s, AssetInput{Name: ptr("a"), AddProjects: []string{p.ID}}, "a.png", pngBytes(t, 3, 3, color.RGBA{1, 0, 0, 255}))
+	b := mustAsset(t, s, AssetInput{Name: ptr("b"), AddProjects: []string{p.ID}}, "b.png", pngBytes(t, 3, 3, color.RGBA{2, 0, 0, 255}))
+	c := mustAsset(t, s, AssetInput{Name: ptr("c"), AddProjects: []string{p.ID}}, "c.png", pngBytes(t, 3, 3, color.RGBA{3, 0, 0, 255}))
+	dlvSupersede(t, s, a.ID, b.ID)
+	dlvSupersede(t, s, b.ID, a.ID) // cycle
+	dlvSupersede(t, s, c.ID, c.ID) // self reference
+	idx, err := s.loadLibIndex(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{a.ID, b.ID, c.ID} {
+		if n := idx.newest(id); idx.assets[n] == nil {
+			t.Errorf("newest(%s) = %s", id, n)
+		}
+	}
+	dlvSnapshot(t, s, p.ID, dlvLine(a.Files[0].SHA256, 1, "x/a.png"))
+	if _, err := s.AuditProject(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PlanSync(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncPathCollisions(t *testing.T) {
+	s := newService(t)
+	p := dlvProject(t, s, "g", `{"naming":"snake_case","folders":{"default":"art"}}`)
+	// Five different assets whose files all end up as art/hero_idle.png (case differs too).
+	names := []string{"HeroIdle.png", "hero_idle.png", "Hero Idle.png", "HERO_IDLE.png", "hero-idle.png"}
+	for i, n := range names {
+		mustAsset(t, s, AssetInput{Name: ptr(fmt.Sprintf("n%d", i)), AddProjects: []string{p.ID}}, n, pngBytes(t, 3, 3, color.RGBA{uint8(i + 1), 0, 0, 255}))
+	}
+	plan, err := s.PlanSync(context.Background(), p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, e := range plan.Entries {
+		l := strings.ToLower(e.Path)
+		if seen[l] {
+			t.Errorf("duplicate target %s", e.Path)
+		}
+		seen[l] = true
+	}
+	for _, w := range []string{"art/hero_idle.png", "art/hero_idle_2.png", "art/hero_idle_3.png", "art/hero_idle_4.png", "art/hero_idle_5.png"} {
+		if !seen[w] {
+			t.Errorf("no entry at %s: %v", w, seen)
+		}
+	}
+}
+
+func TestDerivedCacheEvictionAndInvalidation(t *testing.T) {
+	s := newService(t)
+	ctx := context.Background()
+	old := derivedCacheBudget
+	t.Cleanup(func() { derivedCacheBudget = old })
+	a := mustAsset(t, s, AssetInput{Name: ptr("a")}, "a.png", pngBytes(t, 40, 40, color.RGBA{9, 9, 9, 255}))
+	var paths []string
+	for _, w := range []int{50, 60, 70} {
+		d, err := s.Derive(ctx, a.ID, "a.png", DeriveOptions{Width: w, Filter: "nearest"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, d.Path)
+		// distinct, increasing mtimes
+		at := time.Now().Add(time.Duration(len(paths)-4) * time.Minute)
+		_ = os.Chtimes(d.Path, at, at)
+	}
+	st, _ := os.Stat(paths[1])
+	derivedCacheBudget = st.Size() + 1 // room for roughly one entry
+	d, err := s.Derive(ctx, a.ID, "a.png", DeriveOptions{Width: 80, Filter: "nearest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d.Path); err != nil {
+		t.Error("the entry just written was evicted")
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("old entry %s survived eviction", filepath.Base(p))
+		}
+	}
+	derivedCacheBudget = old
+
+	// Replacing the file drops its derivatives; so does deleting it.
+	if _, err := s.AddFile(ctx, a.ID, "a.png", bytes.NewReader(pngBytes(t, 40, 40, color.RGBA{1, 1, 1, 255})), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d.Path); !os.IsNotExist(err) {
+		t.Error("derivative of the replaced file survived")
+	}
+	d, _ = s.Derive(ctx, a.ID, "a.png", DeriveOptions{Width: 50, Filter: "nearest"})
+	got, _ := s.GetAsset(ctx, a.ID)
+	if err := s.DeleteFile(ctx, a.ID, got.Files[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d.Path); !os.IsNotExist(err) {
+		t.Error("derivative of the deleted file survived")
+	}
+}
+
+func TestDeriveTrashedAndLarge(t *testing.T) {
+	s := newService(t)
+	ctx := context.Background()
+	a := mustAsset(t, s, AssetInput{Name: ptr("a")}, "a.png", pngBytes(t, 100, 100, color.RGBA{9, 9, 9, 255}))
+	old := derivedCacheMaxPixels
+	derivedCacheMaxPixels = 1000
+	t.Cleanup(func() { derivedCacheMaxPixels = old })
+	// 400x400 pixels is above the (lowered) caching limit: streamed from a temp file.
+	d, err := s.Derive(ctx, a.ID, "a.png", DeriveOptions{Width: 400, Filter: "nearest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Temp || strings.Contains(d.Path, "cache") {
+		t.Errorf("large result cached: %+v", d)
+	}
+	if _, err := os.Stat(d.Path); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	if _, err := os.Stat(d.Path); !os.IsNotExist(err) {
+		t.Error("temporary derivative not removed")
+	}
+	if _, err := os.Stat(s.derivedDir(a.ID)); err == nil {
+		t.Error("large result left a cache dir")
+	}
+	if _, err := s.Bulk(ctx, BulkOp{IDs: []string{a.ID}, Action: "trash"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Derive(ctx, a.ID, "a.png", DeriveOptions{Width: 10, Filter: "nearest"}); err == nil {
+		t.Error("derivative of a trashed asset rendered")
+	}
+}
+
+func TestPlanAtlasDoesNotDecode(t *testing.T) {
+	s := newService(t)
+	ctx := context.Background()
+	a := mustAsset(t, s, AssetInput{Name: ptr("a")}, "a.png", pngBytes(t, 10, 12, color.RGBA{9, 9, 9, 255}))
+	b := mustAsset(t, s, AssetInput{Name: ptr("b")}, "b.png", pngBytes(t, 20, 8, color.RGBA{8, 9, 9, 255}))
+	o := AtlasOptions{Padding: 1, MaxSize: 256}
+	plan, err := s.PlanAtlas(ctx, []string{a.ID, b.ID}, o)
+	if err != nil || plan.PNG != nil {
+		t.Fatalf("plan: %v %+v", err, plan)
+	}
+	full, err := s.PackAtlas(ctx, []string{a.ID, b.ID}, o)
+	if err != nil || plan.Width != full.Width || plan.Height != full.Height || fmt.Sprint(plan.Frames) != fmt.Sprint(full.Frames) {
+		t.Errorf("dry run differs from the build: %+v vs %+v", plan, full)
+	}
+	// While another build holds the slot, a second one waits for it.
+	atlasSem <- struct{}{}
+	cctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if _, err := s.PackAtlas(cctx, []string{a.ID}, o); err == nil {
+		t.Error("parallel atlas build was not serialised")
+	}
+	<-atlasSem
 }

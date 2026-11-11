@@ -46,6 +46,12 @@ type RepoFile struct {
 
 var reHexSHA = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// errSkipPath marks a path that cannot be stored but must not fail the whole
+// upload: one odd file name should not hide the rest of the repository.
+type errSkipPath struct{ msg string }
+
+func (e errSkipPath) Error() string { return e.msg }
+
 // validRepoPath checks a path reported by a repository: relative, no NUL or
 // control characters, no "." or ".." segments, valid UTF-8, at most 1024 bytes.
 func validRepoPath(p string) error {
@@ -55,7 +61,7 @@ func validRepoPath(p string) error {
 	case len(p) > maxRepoPathLen:
 		return fmt.Errorf("path longer than %d bytes", maxRepoPathLen)
 	case !utf8.ValidString(p):
-		return errors.New("path is not valid UTF-8")
+		return errSkipPath{"path is not valid UTF-8"}
 	case strings.HasPrefix(p, "/"):
 		return errors.New("path must be relative")
 	case len(p) >= 2 && p[1] == ':' && unicode.IsLetter(rune(p[0])):
@@ -63,7 +69,7 @@ func validRepoPath(p string) error {
 	}
 	for _, r := range p {
 		if r < 0x20 || r == 0x7f {
-			return errors.New("path contains a control character")
+			return errSkipPath{"path contains a control character"}
 		}
 	}
 	for _, seg := range strings.Split(p, "/") {
@@ -77,13 +83,17 @@ func validRepoPath(p string) error {
 // ParseRepoSnapshot reads the line format "sha256<TAB>size<TAB>path". The
 // whole input is rejected on the first bad line: a snapshot replaces the
 // previous one, so a half-understood one would corrupt the audit.
-func ParseRepoSnapshot(r io.Reader) ([]RepoFile, error) {
-	data, err := io.ReadAll(io.LimitReader(r, maxSnapshotBytes+1))
+//
+// Lines whose path has a control character or is not valid UTF-8 are skipped
+// and counted; structurally broken input is an error.
+func ParseRepoSnapshot(r io.Reader) (files []RepoFile, skipped int, err error) {
+	var data []byte
+	data, err = io.ReadAll(io.LimitReader(r, maxSnapshotBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read snapshot: %w", err)
+		return nil, 0, fmt.Errorf("read snapshot: %w", err)
 	}
 	if len(data) > maxSnapshotBytes {
-		return nil, invalid("snapshot is larger than %d MiB", maxSnapshotBytes>>20)
+		return nil, 0, invalid("snapshot is larger than %d MiB", maxSnapshotBytes>>20)
 	}
 	var out []RepoFile
 	seen := map[string]bool{}
@@ -93,33 +103,37 @@ func ParseRepoSnapshot(r io.Reader) ([]RepoFile, error) {
 			continue
 		}
 		if len(out) >= maxSnapshotLines {
-			return nil, invalid("snapshot has more than %d files", maxSnapshotLines)
+			return nil, 0, invalid("snapshot has more than %d files", maxSnapshotLines)
 		}
 		parts := strings.SplitN(line, "\t", 3)
 		if len(parts) != 3 {
-			return nil, invalid("line %d: expected sha256<TAB>size<TAB>path", n+1)
+			return nil, 0, invalid("line %d: expected sha256<TAB>size<TAB>path", n+1)
 		}
 		sum := strings.ToLower(parts[0])
 		if !reHexSHA.MatchString(sum) {
-			return nil, invalid("line %d: sha256 must be 64 hex digits", n+1)
+			return nil, 0, invalid("line %d: sha256 must be 64 hex digits", n+1)
 		}
 		size, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil || size < 0 || size > 1<<50 {
-			return nil, invalid("line %d: size must be a non-negative integer", n+1)
+		if err != nil || size < 0 || size > 1<<40 {
+			return nil, 0, invalid("line %d: size must be a non-negative integer", n+1)
 		}
 		if err := validRepoPath(parts[2]); err != nil {
-			return nil, invalid("line %d: %v", n+1, err)
+			if errors.As(err, new(errSkipPath)) {
+				skipped++
+				continue
+			}
+			return nil, 0, invalid("line %d: %v", n+1, err)
 		}
 		if seen[parts[2]] {
-			return nil, invalid("line %d: duplicate path", n+1)
+			return nil, 0, invalid("line %d: duplicate path", n+1)
 		}
 		seen[parts[2]] = true
 		out = append(out, RepoFile{Path: parts[2], SHA256: sum, Size: size})
 	}
 	if len(out) == 0 {
-		return nil, invalid("snapshot is empty: check the root directory the command ran in")
+		return nil, 0, invalid("snapshot is empty: check the root directory the command ran in")
 	}
-	return out, nil
+	return out, skipped, nil
 }
 
 // RepoSnapshotResult summarises a stored snapshot.
@@ -127,8 +141,9 @@ type RepoSnapshotResult struct {
 	ProjectID string `json:"project_id"`
 	Files     int    `json:"files"`
 	Bytes     int64  `json:"bytes"`
-	Known     int    `json:"known"`   // files whose content matches an asset in the library
-	Unknown   int    `json:"unknown"` // files hoard does not track
+	Known     int    `json:"known"`             // files whose content matches an asset in the library
+	Unknown   int    `json:"unknown"`           // files hoard does not track
+	Skipped   int    `json:"skipped,omitempty"` // names that cannot be stored (control characters, invalid UTF-8)
 	SeenAt    string `json:"seen_at"`
 }
 
@@ -147,7 +162,7 @@ func (s *Service) ReplaceRepoSnapshot(ctx context.Context, projectID string, r i
 	if err := s.projectExists(ctx, projectID); err != nil {
 		return nil, err
 	}
-	files, err := ParseRepoSnapshot(r)
+	files, skipped, err := ParseRepoSnapshot(r)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +174,7 @@ func (s *Service) ReplaceRepoSnapshot(ctx context.Context, projectID string, r i
 	if err != nil {
 		return nil, err
 	}
-	res := &RepoSnapshotResult{ProjectID: projectID, Files: len(files), SeenAt: now()}
+	res := &RepoSnapshotResult{ProjectID: projectID, Files: len(files), Skipped: skipped, SeenAt: now()}
 	err = s.tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM project_files WHERE project_id = ?`, projectID); err != nil {
 			return err
@@ -184,7 +199,7 @@ func (s *Service) ReplaceRepoSnapshot(ctx context.Context, projectID string, r i
 			}
 		}
 		s.record(ctx, tx, "project.repo_snapshot", "", projectID,
-			fmt.Sprintf("%d files (%d known, %d untracked)", res.Files, res.Known, res.Unknown))
+			fmt.Sprintf("%d files (%d known, %d untracked, %d skipped)", res.Files, res.Known, res.Unknown, res.Skipped))
 		return nil
 	})
 	if err != nil {
@@ -551,14 +566,20 @@ func (s *Service) AuditProject(ctx context.Context, projectID string) (*RepoAudi
 
 // ---- audit command ----
 
-// repoSkipDirs are never descended into by the audit command.
-var repoSkipDirs = []string{".git", "node_modules", ".godot", ".import", ".mono", "Library", "Temp", "Logs", "obj", "build", "Build", "dist", ".gradle", ".idea", ".vs", ".venv", "__pycache__", "target"}
+// repoSkipDirs are never descended into by the audit command, wherever they are.
+var repoSkipDirs = []string{".git", "node_modules", ".godot", ".import", ".mono", ".gradle", ".idea", ".vs", ".venv", "__pycache__"}
+
+// repoSkipTop are skipped only directly below the root: a "build" folder deeper
+// down may hold real assets, while a build output sits at the top.
+var repoSkipTop = []string{"Library", "Temp", "Logs", "obj", "build", "Build", "dist", "target"}
 
 // repoCodeExt are extensions of extTable that are code or text, not assets.
 var repoCodeExt = map[string]bool{
 	".gd": true, ".cs": true, ".lua": true, ".py": true, ".js": true, ".json": true, ".md": true, ".txt": true,
 	".yaml": true, ".yml": true, ".toml": true, ".ini": true, ".cfg": true, ".tscn": true, ".tres": true, ".xml": true,
 	".csv": true, ".material": true, ".mat": true, ".atlas": true, ".mtl": true,
+	// too generic or ambiguous to be assets of their own
+	".fs": true, ".p": true, ".it": true, ".cg": true, ".fx": true, ".vs": true, ".bin": true, ".zip": true, ".pdf": true,
 }
 
 // DefaultAuditExtensions lists the extensions the audit command looks for.
@@ -588,6 +609,9 @@ func cleanRoot(root string) (string, error) {
 		if r < 0x20 || r == 0x7f {
 			return "", invalid("root must not contain control characters")
 		}
+	}
+	if root == "~" || strings.HasPrefix(root, "~/") {
+		return "", invalid("root must be an absolute path: the shell command quotes it, so ~ is not expanded")
 	}
 	if len(root) > 1024 || !utf8.ValidString(root) {
 		return "", invalid("root is not a usable path")
@@ -635,13 +659,17 @@ func (s *Service) RepoAuditCommand(ctx context.Context, base, projectID, root st
 	for _, d := range repoSkipDirs {
 		prune = append(prune, "-name "+shellQuoteArg(d))
 	}
+	for _, d := range repoSkipTop {
+		prune = append(prune, "-path "+shellQuoteArg("./"+d))
+	}
 	link, _ := s.RepoSnapshotURL(base, projectID)
-	script := "( cd " + shellQuoteArg(root) + " || exit 1; " +
+	script := "( cd -- " + shellQuoteArg(root) + " || exit 1; " +
 		"if command -v sha256sum >/dev/null 2>&1; then H=sha256sum; else H='shasum -a 256'; fi; " +
 		"find . \\( " + strings.Join(prune, " -o ") + " \\) -prune -o -type f -print" +
 		" | grep -iE " + shellQuoteArg(`\.(`+strings.Join(exts, "|")+`)$`) +
+		" | LC_ALL=C grep -v '[[:cntrl:]]'" +
 		" | LC_ALL=C sort | while IFS= read -r f; do " +
-		`[ -f "$f" ] || continue; p=${f#./}; case "$p" in *"$(printf '\t')"*) continue;; esac; ` +
+		`[ -f "$f" ] || continue; p=${f#./}; ` +
 		`h=$($H < "$f" | cut -d' ' -f1); s=$(wc -c < "$f" | tr -d ' '); ` +
 		`printf '%s\t%s\t%s\n' "$h" "$s" "$p"; done )`
 	return script + " | curl -fsS --globoff -T - " + shellQuoteArg(link), nil
@@ -824,8 +852,8 @@ func (s *Service) PlanSync(ctx context.Context, projectID string) (*SyncPlan, er
 		return order[i].ID < order[j].ID
 	})
 
-	used := map[string]bool{}
-	reused := map[string]bool{}
+	used := pathSet{}
+	reused := pathSet{}
 	firstPath := map[string]string{} // newest asset -> path of its primary file
 	for _, a := range order {
 		switch a.Status {
@@ -839,7 +867,7 @@ func (s *Service) PlanSync(ctx context.Context, projectID string) (*SyncPlan, er
 				SHA256: f.SHA256, Size: f.Size, License: a.License, Attribution: a.Attribution}
 			if paths := bySHA[f.SHA256]; len(paths) > 0 {
 				e.Path, e.Reason = paths[0], "unchanged"
-				used[e.Path] = true
+				used.add(e.Path)
 			} else {
 				// In place: a file of this asset's predecessors already sits in the repo.
 				inPlace := ""
@@ -848,7 +876,7 @@ func (s *Service) PlanSync(ctx context.Context, projectID string) (*SyncPlan, er
 					o := idx.assets[oid]
 					for _, of := range o.Files {
 						for _, cand := range bySHA[of.SHA256] {
-							if used[cand] || inPlace != "" {
+							if used.has(cand) || inPlace != "" {
 								continue
 							}
 							sameExt := strings.EqualFold(path.Ext(cand), path.Ext(f.Filename))
@@ -862,7 +890,7 @@ func (s *Service) PlanSync(ctx context.Context, projectID string) (*SyncPlan, er
 				}
 				if inPlace != "" {
 					e.Path, e.Reason, e.Note = inPlace, "changed", note
-					reused[inPlace] = true
+					reused.add(inPlace)
 				} else {
 					e.Path = s.defaultRepoPath(brief, a, f, used)
 					if old, ok := byPath[e.Path]; ok && old.SHA256 != f.SHA256 {
@@ -871,7 +899,7 @@ func (s *Service) PlanSync(ctx context.Context, projectID string) (*SyncPlan, er
 						e.Reason = "missing"
 					}
 				}
-				used[e.Path] = true
+				used.add(e.Path)
 			}
 			if prim != nil && f.ID == prim.ID {
 				firstPath[a.ID] = e.Path
@@ -886,7 +914,7 @@ func (s *Service) PlanSync(ctx context.Context, projectID string) (*SyncPlan, er
 		for _, oid := range idx.predecessors(a.ID) {
 			for _, of := range idx.assets[oid].Files {
 				for _, p := range bySHA[of.SHA256] {
-					if reused[p] || used[p] || reportedRemoval[p] {
+					if reused.has(p) || used.has(p) || reportedRemoval[p] {
 						continue
 					}
 					reportedRemoval[p] = true
@@ -900,7 +928,7 @@ func (s *Service) PlanSync(ctx context.Context, projectID string) (*SyncPlan, er
 }
 
 // defaultRepoPath places a file by the brief's folders and naming.
-func (s *Service) defaultRepoPath(b deliveryBrief, a *idxAsset, f File, used map[string]bool) string {
+func (s *Service) defaultRepoPath(b deliveryBrief, a *idxAsset, f File, used pathSet) string {
 	folder := cleanFolder(b.Folders[a.Type])
 	if folder == "" {
 		folder = cleanFolder(b.Folders["default"])
@@ -910,12 +938,19 @@ func (s *Service) defaultRepoPath(b deliveryBrief, a *idxAsset, f File, used map
 	}
 	name := ApplyNaming(f.Filename, b.Naming)
 	p := folder + "/" + name
-	if used[p] {
-		e := path.Ext(name)
-		p = folder + "/" + strings.TrimSuffix(name, e) + "_" + strings.TrimPrefix(a.ID, "ast_") + e
+	e := path.Ext(name)
+	for n := 2; used.has(p); n++ {
+		p = fmt.Sprintf("%s/%s_%d%s", folder, strings.TrimSuffix(name, e), n, e)
 	}
 	return p
 }
+
+// pathSet is a set of repository paths compared case-insensitively: a
+// checkout on a case-insensitive filesystem cannot hold both spellings.
+type pathSet map[string]bool
+
+func (p pathSet) has(s string) bool { return p[strings.ToLower(s)] }
+func (p pathSet) add(s string)      { p[strings.ToLower(s)] = true }
 
 // RepoLock is the content of hoard.lock.json.
 type RepoLock struct {
@@ -954,3 +989,6 @@ func (s *Service) BuildRepoLock(ctx context.Context, projectID string) (*RepoLoc
 	sort.Slice(lock.Entries, func(i, j int) bool { return lock.Entries[i].Path < lock.Entries[j].Path })
 	return lock, nil
 }
+
+// CleanRoot validates a repository directory argument for use in shell commands.
+func CleanRoot(root string) (string, error) { return cleanRoot(root) }

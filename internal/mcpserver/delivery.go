@@ -19,19 +19,19 @@ const syncDownloadCap = 300
 func (t *tools) addDeliveryTools(srv *mcp.Server) {
 	ro := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_repo_audit_command", Annotations: ro,
-		Description: "Get ONE shell command to run inside a game repository (POSIX shell, needs find, sha256sum or shasum, and curl). It lists the asset-like files (images, audio, models, fonts, video; not code or text; skipping .git, node_modules, .godot, Library, build folders…) with sha256, size and relative path, and uploads that list to hoard, which stores it as the project's repository snapshot. `root` is the repository directory (default: the current directory). Run the command, then call audit_project or sync_project. The link in the command is valid for two hours and only writes the snapshot of this project."},
+		Description: "Get ONE shell command to run inside a game repository (POSIX shell, needs find, sha256sum or shasum, and curl). It lists the asset-like files (images, audio, models, fonts, video; not code or text; skipping .git, node_modules, .godot, Library, build folders…) with sha256, size and relative path, and uploads that list to hoard, which stores it as the project's repository snapshot. `root` is the repository directory: pass an absolute path (no `~`; it is quoted, not expanded). Files whose names contain control characters or invalid UTF-8 are left out; the summary hoard prints says how many (`skipped`). Run the command, then call audit_project or sync_project. The link in the command is valid for two hours and only writes the snapshot of this project."},
 		t.repoAuditCommand)
 	mcp.AddTool(srv, &mcp.Tool{Name: "audit_project", Annotations: ro,
 		Description: "Compare the project's repository snapshot (from get_repo_audit_command) with hoard. Returns: known files (the asset each belongs to, with flags superseded = a newer version exists, rework / rejected / placeholder status, not_in_project), unknown files (untracked: candidates for create_asset, with a suggested type and name), project assets missing from the repository, and assets in the repository that are not linked to the project (link them with bulk_update_assets add_project_ids). Counts are complete; lists are cut at 500 entries. To fix outdated or missing files call sync_project."},
 		t.auditProject)
 	mcp.AddTool(srv, &mcp.Tool{Name: "sync_project", Annotations: ro,
-		Description: "Plan and perform delivery of a project's assets into its repository. For every asset used in the project (superseded assets are followed to their newest version) it decides the target path: in place when the repository snapshot holds an older version of the asset (same path, same extension), otherwise the brief's folders (by asset type, then `default`, then assets/<type>) with the file name converted to the brief's naming convention. Returns curl download commands only for files that are missing or differ, each with a reason (missing, changed; conflict = a different file already sits at the target path, no command is given), a curl command for the lock file hoard.lock.json (path, asset, sha256, size, license, attribution of every asset file), and `removals`: repository files of superseded assets that were not replaced in place. hoard never deletes anything: decide yourself about removals. `root` is the repository directory (default: current directory). With `only_missing` files that merely changed are skipped. Run get_repo_audit_command first so the snapshot is current, and again afterwards to verify. At most 300 commands per call."},
+		Description: "Plan the delivery of a project's assets into its repository. This tool only plans and returns shell commands; nothing is written until you run them. For every asset used in the project (superseded assets are followed to their newest version) it decides the target path: in place when the repository snapshot holds an older version of the asset (same path, same extension), otherwise the brief's folders (by asset type, then `default`, then assets/<type>) with the file name converted to the brief's naming convention. Returns curl download commands only for files that are missing or differ, each with a reason (missing, changed; conflict = a different file already sits at the target path, no command is given), curl commands (POSIX shell) that never overwrite an existing file for reason missing, a curl command for the lock file hoard.lock.json (path, asset, sha256, size, license, attribution of every asset file), and `removals`: repository files of superseded assets that were not replaced in place. hoard never deletes anything: decide yourself about removals. `root` is the repository directory: pass an absolute path (no `~`). With `only_missing` files that merely changed are skipped. Run get_repo_audit_command first so the snapshot is current, and again afterwards to verify. At most 300 commands per call."},
 		t.syncProject)
 	mcp.AddTool(srv, &mcp.Tool{Name: "pack_atlas", Annotations: ro,
-		Description: "Pack the primary images of several assets (PNG, JPEG, GIF, WebP, BMP, TIFF; max 256) into one texture atlas with MaxRects. Returns a curl command that downloads a zip (atlas.png plus metadata) and the frame list {name, asset_id, x, y, w, h}. format: json (atlas.json with frames), phaser (atlas.json in the Phaser JSON-hash format) or godot (one AtlasTexture .tres per sprite below sprites/; `res_path` is where atlas.png will live in the project, default res://atlas.png). Options: padding 0-32 px between sprites (default 0), extrude 0-4 (repeat edge pixels, avoids bleeding), max_size up to 8192 (default 2048), power_of_two. Frame names come from the asset names; unzip into the repository, then record usage with bulk_update_assets."},
+		Description: "Pack the primary images of several assets (PNG, JPEG, GIF, WebP, BMP, TIFF; max 256) into one texture atlas with MaxRects. Returns a curl command (POSIX shell) that downloads a zip (atlas.png plus metadata) and the frame list {name, asset_id, x, y, w, h}. format: json (atlas.json with frames), phaser (atlas.json in the Phaser JSON-hash format) or godot (one AtlasTexture .tres per sprite below sprites/; `res_path` is where atlas.png will live in the project, default res://atlas.png). Options: padding 0-32 px between sprites (default 0), extrude 0-4 (repeat edge pixels, avoids bleeding), max_size up to 8192 (default 2048), power_of_two. Frame names come from the asset names; unzip into the repository, then record usage with bulk_update_assets."},
 		t.packAtlas)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_derivative_command", Annotations: ro,
-		Description: "Get a curl command that downloads a resized copy of an image file of an asset, rendered on demand and cached by hoard. Give `width` and/or `height` (the other follows the aspect ratio) or a `scale` factor; max 8192 px per edge. `filter`: nearest keeps hard pixel edges, linear smooths; the default is nearest for pixel art and integer scales of 2 or more, otherwise linear. `format`: png (default) or jpeg (transparency becomes white; `quality` 1-100, default 85). WebP output is not supported. `output` is the local file to write."},
+		Description: "Get a curl command (POSIX shell) that downloads a resized copy of an image file of an asset, rendered on demand and cached by hoard. Give `width` and/or `height` (the other follows the aspect ratio) or a `scale` factor; max 8192 px per edge. `filter`: nearest keeps hard pixel edges, linear smooths; the default is nearest for pixel art and integer scales of 2 or more, otherwise linear. `format`: png (default) or jpeg (transparency becomes white; `quality` 1-100, default 85). WebP output is not supported. `output` is the local file to write."},
 		t.derivativeCommand)
 	mcp.AddTool(srv, &mcp.Tool{Name: "get_engine_hints", Annotations: ro,
 		Description: "Recommended import settings for assets in Godot 4, Unity or Phaser (`engine`; default: the engine in the project's brief when `project_id` is given). Per file: settings by their editor labels (e.g. pixel art: Godot lossless compression and no mipmaps, Unity Filter Mode Point and Compression None with Pixels Per Unit = the brief's tile size; music loop flags; SFX format choices), Godot import parameter keys, Phaser load snippets, and notes. For a sprite sheet with frame_width/frame_height attributes (and optionally columns, frames, fps, loop, animations) on Godot it also returns the text of a SpriteFrames .tres: write it to `sprite_frames_filename` next to the image (`res_dir` is the res:// directory the image will have, e.g. res://art/sprites). These are recommendations from engine knowledge, not checked against a running engine: say so when it matters."},
@@ -68,7 +68,7 @@ func (t *tools) auditProject(ctx context.Context, _ *mcp.CallToolRequest, in aud
 	if a.HasSnapshot {
 		c := a.Counts
 		if c.Outdated+c.Missing > 0 {
-			next = append(next, fmt.Sprintf("%d outdated and %d missing: call sync_project to get the download commands", c.Outdated, c.Missing))
+			next = append(next, fmt.Sprintf("%d outdated files, %d assets missing (the newer version of an outdated file also counts as missing): call sync_project to get the download commands", c.Outdated, c.Missing))
 		}
 		if c.Untracked > 0 {
 			next = append(next, fmt.Sprintf("%d untracked files: create_asset for the ones that are assets (suggested_type and suggested_name are guesses), then link them to the project", c.Untracked))
@@ -98,6 +98,11 @@ func deliveryJoinRoot(root, p string) string {
 }
 
 func (t *tools) syncProject(ctx context.Context, req *mcp.CallToolRequest, in syncIn) (*mcp.CallToolResult, any, error) {
+	root, err := hoard.CleanRoot(in.Root)
+	if err != nil {
+		return nil, nil, err
+	}
+	in.Root = root
 	plan, err := t.svc.PlanSync(ctx, in.ProjectID)
 	if err != nil {
 		return nil, nil, err
@@ -126,8 +131,12 @@ func (t *tools) syncProject(ctx context.Context, req *mcp.CallToolRequest, in sy
 		case len(downloads) >= syncDownloadCap:
 			remaining++
 		default:
-			downloads = append(downloads, download{Path: e.Path, Reason: e.Reason, AssetID: e.AssetID, Name: e.Name, Size: e.Size, Note: e.Note,
-				Command: "curl -fsS --globoff --create-dirs -o " + shellQuote(deliveryJoinRoot(in.Root, e.Path)) + " " + shellQuote(t.downloadURL(base, e.AssetID, e.Filename))})
+			target := shellQuote(deliveryJoinRoot(in.Root, e.Path))
+			cmd := "curl -fsS --globoff --create-dirs -o " + target + " " + shellQuote(t.downloadURL(base, e.AssetID, e.Filename))
+			if e.Reason == "missing" { // never clobber a file that appeared since the snapshot
+				cmd = "if [ -e " + target + " ]; then echo " + shellQuote("skip: "+deliveryJoinRoot(in.Root, e.Path)+" exists") + "; else " + cmd + "; fi"
+			}
+			downloads = append(downloads, download{Path: e.Path, Reason: e.Reason, AssetID: e.AssetID, Name: e.Name, Size: e.Size, Note: e.Note, Command: cmd})
 		}
 	}
 	lockTarget := deliveryJoinRoot(in.Root, "hoard.lock.json")
@@ -169,9 +178,10 @@ func (t *tools) packAtlas(ctx context.Context, req *mcp.CallToolRequest, in atla
 	if err != nil {
 		return nil, nil, err
 	}
-	// Packing here validates the request and yields the frame list; the zip is
-	// rendered again when the link is fetched (the layout is deterministic).
-	atlas, err := t.svc.PackAtlas(ctx, ids, opts)
+	// A layout-only dry run validates the request and yields the frame list
+	// without decoding pixels; the zip is built when the link is fetched (the
+	// layout is deterministic).
+	atlas, err := t.svc.PlanAtlas(ctx, ids, opts)
 	if err != nil {
 		return nil, nil, err
 	}
