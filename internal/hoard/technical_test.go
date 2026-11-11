@@ -39,6 +39,12 @@ func TestTechnicalAttrsAreNotAnEdit(t *testing.T) {
 		"string value": {"duration_s": "long"},
 		"negative":     {"duration_s": -1.0},
 		"nested":       {"width": map[string]any{"a": 1}},
+		"too many ch":  {"channels": 65.0},
+		"huge rate":    {"sample_rate": 1e9},
+		"huge width":   {"width": 2e6},
+		"fractional":   {"width": 10.5},
+		"too long":     {"duration_s": 1e8},
+		"too complex":  {"triangles": 2e9},
 	} {
 		if _, err := s.SetTechnicalAttrs(ctx, a.ID, attrs); err == nil {
 			t.Errorf("%s was accepted", name)
@@ -46,5 +52,17 @@ func TestTechnicalAttrsAreNotAnEdit(t *testing.T) {
 	}
 	if _, err := s.SetTechnicalAttrs(ctx, "ast_aaaaaaaaaaaa", map[string]any{"width": 1.0}); err == nil {
 		t.Error("unknown asset accepted")
+	}
+}
+
+func TestTechnicalAttrsRefuseTrashedAssets(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	a := mustAsset(t, s, AssetInput{Name: ptr("Old")}, "", nil)
+	if _, err := s.Bulk(ctx, BulkOp{IDs: []string{a.ID}, Action: "trash"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetTechnicalAttrs(ctx, a.ID, map[string]any{"width": 1.0}); err == nil {
+		t.Error("trashed asset accepted technical attributes")
 	}
 }

@@ -27,7 +27,7 @@ Errors have one shape:
 | `GET /assets/{id}/download` | The file, or a zip when the asset has several |
 | `GET /download?ids=a,b,c` | Zip of several assets, one folder each, including `asset.json` |
 | `GET` / `PUT` / `DELETE /assets/{id}/thumbnail` | Preview thumbnail; `PUT` takes an image as the request body |
-| `PUT /assets/{id}/technical` | `{ "attrs": { "duration_s": 2.5 } }`: records attributes measured by a client while rendering a preview. Only `duration_s`, `sample_rate`, `channels`, `width`, `height` and `triangles` (non-negative numbers) are accepted. Not an edit: the asset's `updated_at` and the activity feed are left alone |
+| `PUT /assets/{id}/technical` | `{ "attrs": { "duration_s": 2.5 } }`: records attributes measured by a client while rendering a preview. Only `duration_s` (≤ 1e7), `sample_rate` (≤ 1e6), `channels` (≤ 64), `width`, `height` (≤ 1e6) and `triangles` (≤ 1e9) are accepted, as non-negative numbers (whole numbers except `duration_s`); trashed assets are refused. Not an edit: the asset's `updated_at` and the activity feed are left alone |
 | `POST /assets/{id}/suggest` | Ask the AI agent for metadata without saving it |
 | `POST /assets/analyze` | `{ "ids": [...], "overwrite": false }` queues the AI agent |
 
