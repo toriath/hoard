@@ -51,6 +51,10 @@ var (
 	BriefNamings = []string{"snake_case", "kebab-case", "camelCase", "PascalCase", "keep"}
 )
 
+// briefFields are the accepted top-level keys (case-sensitive).
+var briefFields = []string{"engine", "engine_version", "art_direction", "pixel_art", "palette", "tile_size", "base_resolution",
+	"max_texture_size", "power_of_two", "formats", "audio", "licenses", "folders", "naming", "size_budget_mb", "notes"}
+
 // maxBriefBytes bounds the stored brief.
 const maxBriefBytes = 32 << 10
 
@@ -73,6 +77,26 @@ func (b *ProjectBrief) IsEmpty() bool {
 // Validate checks and normalises the brief in place (palette colours are
 // lowercased and short hex forms expanded).
 func (b *ProjectBrief) Validate() error {
+	// Nested nulls and empty values mean "remove": {"sprite": null} drops the key.
+	for k, v := range b.Formats {
+		if len(v) == 0 {
+			delete(b.Formats, k)
+		}
+	}
+	for k, v := range b.Folders {
+		if strings.TrimSpace(v) == "" {
+			delete(b.Folders, k)
+		}
+	}
+	if len(b.Formats) == 0 {
+		b.Formats = nil
+	}
+	if len(b.Folders) == 0 {
+		b.Folders = nil
+	}
+	if a := b.Audio; a != nil && a.SampleRate == nil && a.Channels == nil && a.LoudnessLUFS == nil && a.MaxPeakDBFS == nil {
+		b.Audio = nil
+	}
 	if b.Engine != "" && !slices.Contains(BriefEngines, b.Engine) {
 		return invalid("brief.engine %q is not valid (valid: %s)", b.Engine, strings.Join(BriefEngines, ", "))
 	}
@@ -187,8 +211,13 @@ func validRepoFolder(dir string) error {
 		}
 	}
 	for _, seg := range strings.Split(dir, "/") {
-		if seg == ".." {
+		switch {
+		case seg == "..":
 			return errors.New("must not contain \"..\"")
+		case seg == ".":
+			return errors.New("must not contain \".\" segments")
+		case strings.EqualFold(seg, ".git"):
+			return errors.New("must not point into .git")
 		}
 	}
 	if path.Clean(dir) == ".." || strings.HasPrefix(path.Clean(dir), "../") {
@@ -232,6 +261,11 @@ func (s *Service) SaveProjectBrief(ctx context.Context, projectID string, patch 
 		merged := map[string]json.RawMessage{}
 		_ = json.Unmarshal([]byte(cur), &merged)
 		var changed []string
+		for k := range patch {
+			if !slices.Contains(briefFields, k) {
+				return invalid("unknown brief field %q (field names are lowercase snake_case; valid: %s)", k, strings.Join(briefFields, ", "))
+			}
+		}
 		for k, v := range patch {
 			if trimmed := bytes.TrimSpace(v); len(trimmed) == 0 || string(trimmed) == "null" {
 				if _, ok := merged[k]; ok {

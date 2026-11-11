@@ -17,7 +17,7 @@ export function BriefPanel({ project }: { project: Project }) {
   const [credits, setCredits] = useState(false)
   const assetsVersion = useVersion('assets')
   const groupsVersion = useVersion('groups')
-  const brief = useQuery(() => briefApi.brief(project.id), [project.id, rev, groupsVersion])
+  const brief = useQuery(() => briefApi.brief(project.id), [project.id, rev])
   const b = brief.data
   if (!b) return brief.loading ? <Spinner /> : null
 
@@ -260,7 +260,6 @@ function CreditsDialog({ project, onClose }: { project: Project; onClose: () => 
 // ---------- editing ----------
 
 const list = (s: string) => s.split(/[\s,]+/).map((x) => x.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)
-const numOrNull = (s: string) => (s.trim() === '' ? null : Number(s))
 
 function BriefDialog({ project, brief, onClose, onSaved }: { project: Project; brief: ProjectBrief; onClose: () => void; onSaved: () => void }) {
   const meta = getMeta()
@@ -291,10 +290,18 @@ function BriefDialog({ project, brief, onClose, onSaved }: { project: Project; b
   const toggleLicense = (l: string) => setLicenses((cur) => (cur.includes(l) ? cur.filter((x) => x !== l) : [...cur, l]))
 
   const save = async () => {
+    // An empty field clears the value; text that is not a number is an error and nothing is sent.
+    const bad: string[] = []
+    const numOrNull = (label: string, s: string) => {
+      if (s.trim() === '') return null
+      const n = Number(s)
+      if (!Number.isFinite(n)) bad.push(label)
+      return n
+    }
     const fmt = Object.fromEntries(Object.entries(formats).map(([k, v]) => [k, list(v)]).filter(([, v]) => v.length))
     const fol = Object.fromEntries(Object.entries(folders).map(([k, v]) => [k, v.trim()]).filter(([, v]) => v))
     const audio = {
-      sample_rate: numOrNull(rate), channels: numOrNull(channels), loudness_lufs: numOrNull(lufs), max_peak_dbfs: numOrNull(peak),
+      sample_rate: numOrNull('Sample rate', rate), channels: numOrNull('Channels', channels), loudness_lufs: numOrNull('Loudness', lufs), max_peak_dbfs: numOrNull('Max peak', peak),
     }
     const audioSet = Object.fromEntries(Object.entries(audio).filter(([, v]) => v !== null))
     // Every field is sent: an empty one is null, which clears it on the server.
@@ -304,17 +311,21 @@ function BriefDialog({ project, brief, onClose, onSaved }: { project: Project; b
       art_direction: art.trim() || null,
       pixel_art: pixel || null,
       palette: palette.length ? palette : null,
-      tile_size: numOrNull(tile),
+      tile_size: numOrNull('Tile size', tile),
       base_resolution: res.trim() || null,
-      max_texture_size: numOrNull(maxTex),
+      max_texture_size: numOrNull('Max texture', maxTex),
       power_of_two: pot || null,
       formats: Object.keys(fmt).length ? fmt : null,
       audio: Object.keys(audioSet).length ? audioSet : null,
       licenses: licenses.length ? licenses : null,
       folders: Object.keys(fol).length ? fol : null,
       naming: naming || null,
-      size_budget_mb: numOrNull(budget),
+      size_budget_mb: numOrNull('Size budget', budget),
       notes: notes.trim() || null,
+    }
+    if (bad.length) {
+      setError(`Not a number: ${bad.join(', ')}.`)
+      return
     }
     setSaving(true)
     setError('')

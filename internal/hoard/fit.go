@@ -126,9 +126,11 @@ func (s *Service) FitReports(ctx context.Context, assetID, projectID string) ([]
 	return out, nil
 }
 
-// checkFit runs every check. With persist set, measured audio attributes are
-// stored on the asset.
-func (s *Service) checkFit(ctx context.Context, a *Asset, b *ProjectBrief, persist bool) ([]FitIssue, error) {
+// checkFit runs every check. With measure set, image and audio files are read
+// (palette, sample data) and measured audio attributes are stored on the
+// asset. Without it nothing is decoded and nothing is written: audio is judged
+// from the attributes stored earlier, which is what page views use.
+func (s *Service) checkFit(ctx context.Context, a *Asset, b *ProjectBrief, measure bool) ([]FitIssue, error) {
 	if b.IsEmpty() {
 		return []FitIssue{issue(sevInfo, "no_brief", "The project has no brief, so there is nothing to check this asset against.")}, nil
 	}
@@ -195,14 +197,16 @@ func (s *Service) checkFit(ctx context.Context, a *Asset, b *ProjectBrief, persi
 		add(s.fitImageSize(a, p, b)...)
 	}
 	if len(b.Palette) > 0 && decodableImage[ext(p.Filename)] && p.Width > 0 {
-		add(s.fitPalette(ctx, a, p, b)...)
+		if measure {
+			add(s.fitPalette(ctx, a, p, b)...)
+		}
 	} else if len(b.Palette) > 0 && p.Kind == KindImage {
 		add(issue(sevInfo, "palette_unchecked", "Palette not checked: %s cannot be decoded by the server.", p.Filename))
 	}
 
 	// Audio.
 	if isAudioExt(ext(p.Filename)) {
-		add(s.fitAudio(a, p, b, persist)...)
+		add(s.fitAudio(ctx, a, p, b, measure)...)
 	}
 
 	// Size.
@@ -281,7 +285,7 @@ func (s *Service) fitImageSize(a *Asset, p *File, b *ProjectBrief) []FitIssue {
 	if b.PowerOfTwo && (!isPow2(w) || !isPow2(h)) {
 		out = append(out, issue(sevWarning, "power_of_two", "Image is %dx%d px; the project wants power-of-two dimensions.", w, h))
 	}
-	if b.PixelArt && b.TileSize != nil {
+	if b.TileSize != nil {
 		t := *b.TileSize
 		switch a.Type {
 		case "tileset":
@@ -371,12 +375,11 @@ func (s *Service) fitPalette(ctx context.Context, a *Asset, p *File, b *ProjectB
 // time like thumbnails) and returns the share of opaque pixels that are off
 // the palette. Very large images are sampled.
 func (s *Service) measurePalette(ctx context.Context, path string, palette []string) (paletteResult, error) {
-	select {
-	case s.thumbSem <- struct{}{}:
-		defer func() { <-s.thumbSem }()
-	case <-ctx.Done():
-		return paletteResult{}, ctx.Err()
+	release, err := s.acquireDecode(ctx)
+	if err != nil {
+		return paletteResult{}, err
 	}
+	defer release()
 	fh, err := os.Open(path)
 	if err != nil {
 		return paletteResult{}, err
@@ -408,7 +411,7 @@ func (s *Service) measurePalette(ctx context.Context, path string, palette []str
 	if px := bnd.Dx() * bnd.Dy(); px > 4_000_000 {
 		step = int(math.Ceil(math.Sqrt(float64(px) / 4_000_000)))
 	}
-	memo := map[uint32]bool{} // packed colour -> off palette
+	memo := map[uint32]bool{} // packed colour -> off palette (bounded)
 	var opaque, off int
 	for y := bnd.Min.Y; y < bnd.Max.Y; y += step {
 		if y&63 == 0 && ctx.Err() != nil {
@@ -431,7 +434,9 @@ func (s *Service) measurePalette(ctx context.Context, path string, palette []str
 						break
 					}
 				}
-				memo[key] = o
+				if len(memo) < 65536 {
+					memo[key] = o
+				}
 			}
 			if o {
 				off++
@@ -447,38 +452,99 @@ func (s *Service) measurePalette(ctx context.Context, path string, palette []str
 
 // ---- audio ----
 
-func (s *Service) fitAudio(a *Asset, p *File, b *ProjectBrief, persist bool) []FitIssue {
-	key := p.SHA256
-	measureCache.Lock()
-	info, ok := measureCache.audio[key]
-	measureCache.Unlock()
-	if !ok {
-		var err error
-		info, err = AnalyzeAudio(filepath.Join(s.assetDir(a.ID), "files", p.Filename))
-		if err != nil {
-			if isAudioHeaderFormat(ext(p.Filename)) {
-				return []FitIssue{issue(sevInfo, "audio_unchecked", "Audio not checked: %v.", err)}
-			}
-			info = nil
+// acquireDecode takes the one slot shared by every operation that reads
+// whole media files (thumbnails, palette and audio measurements).
+func (s *Service) acquireDecode(ctx context.Context) (func(), error) {
+	select {
+	case s.thumbSem <- struct{}{}:
+		return func() { <-s.thumbSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// audioAttrKeys are the attrs a measurement owns.
+var audioAttrKeys = []string{"duration_s", "sample_rate", "channels", "bit_depth", "peak_dbfs", "loudness_approx_db"}
+
+// audioFromAttrs rebuilds what an earlier measurement stored.
+func audioFromAttrs(a *Asset, ext string) *AudioInfo {
+	sr, ok1 := attrNumber(a.Attrs, "sample_rate")
+	ch, ok2 := attrNumber(a.Attrs, "channels")
+	if !ok1 || !ok2 {
+		return nil
+	}
+	info := &AudioInfo{Format: strings.TrimPrefix(ext, "."), SampleRate: int(sr), Channels: int(ch)}
+	if ext == ".opus" {
+		info.Format = "opus"
+	}
+	if v, ok := attrNumber(a.Attrs, "bit_depth"); ok {
+		info.BitDepth = int(v)
+	}
+	if pk, ok := a.Attrs["peak_dbfs"].(float64); ok {
+		info.Measured, info.PeakDBFS = true, pk
+		info.LoudnessApprox = dbfsFloor
+		if l, ok := a.Attrs["loudness_approx_db"].(float64); ok {
+			info.LoudnessApprox = l
 		}
+	}
+	return info
+}
+
+func (s *Service) fitAudio(ctx context.Context, a *Asset, p *File, b *ProjectBrief, measure bool) []FitIssue {
+	e := ext(p.Filename)
+	var info *AudioInfo
+	if !measure {
+		if info = audioFromAttrs(a, e); info == nil {
+			return []FitIssue{issue(sevInfo, "audio_unmeasured", "Audio not measured yet (sample rate, channels, peak, loudness); run check_asset_fit or open the asset's Fit section to measure it.")}
+		}
+	} else {
+		key := p.SHA256 + e
 		measureCache.Lock()
-		if len(measureCache.audio) >= measureCacheMax {
-			clear(measureCache.audio)
-		}
-		measureCache.audio[key] = info
+		cached, ok := measureCache.audio[key]
 		measureCache.Unlock()
-	}
-	if info == nil {
-		return []FitIssue{issue(sevInfo, "audio_unchecked", "Audio format %s is not checked (sample rate, channels and loudness are only read from WAV, Ogg Vorbis/Opus and FLAC).", ext(p.Filename))}
-	}
-	if persist {
-		s.storeAudioAttrs(a, info)
+		if ok {
+			info = cached
+		} else {
+			release, err := s.acquireDecode(ctx)
+			if err != nil {
+				return nil
+			}
+			var aerr error
+			info, aerr = AnalyzeAudio(ctx, filepath.Join(s.assetDir(a.ID), "files", p.Filename))
+			release()
+			if ctx.Err() != nil {
+				return nil
+			}
+			if aerr != nil {
+				if isAudioHeaderFormat(e) {
+					return []FitIssue{issue(sevInfo, "audio_unchecked", "Audio not checked: %v.", aerr)}
+				}
+				info = nil
+			}
+			measureCache.Lock()
+			if len(measureCache.audio) >= measureCacheMax {
+				clear(measureCache.audio)
+			}
+			measureCache.audio[key] = info
+			measureCache.Unlock()
+		}
+		if info == nil {
+			return []FitIssue{issue(sevInfo, "audio_unchecked", "Audio format %s is not checked (sample rate, channels and loudness are only read from WAV, Ogg Vorbis/Opus and FLAC).", e)}
+		}
+		s.storeAudioAttrs(a, p, info)
 	}
 
 	var out []FitIssue
 	if t := b.Audio; t != nil {
 		if t.SampleRate != nil && info.SampleRate != *t.SampleRate {
-			out = append(out, issue(sevWarning, "sample_rate", "%d Hz, project wants %d Hz.", info.SampleRate, *t.SampleRate))
+			if info.Format == "opus" {
+				// Opus is always decoded at 48 kHz; the header's rate is only the original.
+				if *t.SampleRate != 48000 {
+					out = append(out, issue(sevInfo, "sample_rate", "Opus plays at 48000 Hz, project wants %d Hz.", *t.SampleRate))
+				}
+			} else {
+				out = append(out, issue(sevWarning, "sample_rate", "%d Hz, project wants %d Hz.", info.SampleRate, *t.SampleRate))
+			}
 		}
 		if t.Channels != nil && info.Channels != *t.Channels {
 			sev := sevWarning
@@ -495,19 +561,19 @@ func (s *Service) fitAudio(a *Asset, p *File, b *ProjectBrief, persist bool) []F
 				}
 				out = append(out, issue(sevWarning, "peak", "Peak %.1f dBFS %s the project's maximum of %.1f dBFS.", info.PeakDBFS, word, *t.MaxPeakDBFS))
 			}
-			if t.LoudnessLUFS != nil && info.RMSDBFS > dbfsFloor {
-				if diff := info.RMSDBFS - *t.LoudnessLUFS; math.Abs(diff) > loudnessTolerance {
+			if t.LoudnessLUFS != nil && info.LoudnessApprox > dbfsFloor {
+				if diff := info.LoudnessApprox - *t.LoudnessLUFS; math.Abs(diff) > loudnessTolerance {
 					sev := sevWarning
 					if a.Type == "sfx" {
 						sev = sevInfo // short effects are rarely loudness-normalised
 					}
-					out = append(out, issue(sev, "loudness", "Approximate loudness %.1f dB (RMS of the non-silent parts, not true LUFS) is %.1f dB %s the project's target of %.0f LUFS.",
-						info.RMSDBFS, math.Abs(diff), map[bool]string{true: "above", false: "below"}[diff > 0], *t.LoudnessLUFS))
+					out = append(out, issue(sev, "loudness", "Approximate loudness %.1f LUFS (energy of the non-silent parts, no K-weighting, not true LUFS) is %.1f dB %s the project's target of %.0f LUFS.",
+						info.LoudnessApprox, math.Abs(diff), map[bool]string{true: "above", false: "below"}[diff > 0], *t.LoudnessLUFS))
 				}
 			}
 		}
 	}
-	if !info.Measured {
+	if measure && !info.Measured {
 		out = append(out, issue(sevInfo, "audio_header_only", "Peak and loudness are only measured for PCM WAV; %s was checked by header only.", info.Format))
 	}
 	return out
@@ -521,10 +587,15 @@ func isAudioHeaderFormat(e string) bool {
 	return false
 }
 
-// storeAudioAttrs writes measured values into attrs where the asset has none.
-// It deliberately bypasses UpdateAsset: updated_at and the activity feed stay
-// untouched, because measuring is not an edit.
-func (s *Service) storeAudioAttrs(a *Asset, info *AudioInfo) {
+// storeAudioAttrs writes measured values into attrs. It deliberately bypasses
+// UpdateAsset: updated_at and the activity feed stay untouched, because
+// measuring is not an edit. Values already present are kept, unless the primary
+// file changed since the last measurement (recorded as measured_sha256), in
+// which case they are replaced. Trashed assets are left alone.
+func (s *Service) storeAudioAttrs(a *Asset, p *File, info *AudioInfo) {
+	if a.DeletedAt != nil {
+		return
+	}
 	measured := map[string]any{
 		"duration_s":  math.Round(info.DurationS*1000) / 1000,
 		"sample_rate": info.SampleRate,
@@ -535,21 +606,14 @@ func (s *Service) storeAudioAttrs(a *Asset, info *AudioInfo) {
 	}
 	if info.Measured {
 		measured["peak_dbfs"] = math.Round(info.PeakDBFS*10) / 10
+		measured["loudness_approx_db"] = math.Round(info.LoudnessApprox*10) / 10
 	}
 	if info.DurationS <= 0 {
 		delete(measured, "duration_s")
 	}
-	missing := false
-	for k := range measured {
-		if _, ok := a.Attrs[k]; !ok {
-			missing = true
-		}
-	}
-	if !missing {
-		return
-	}
 	ctx := context.Background()
 	changed := false
+	// TODO(lock): hold the asset lock (lockAssets) around this read-modify-write.
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		var raw string
 		if err := tx.QueryRowContext(ctx, `SELECT attrs FROM assets WHERE id = ?`, a.ID).Scan(&raw); err != nil {
@@ -557,11 +621,27 @@ func (s *Service) storeAudioAttrs(a *Asset, info *AudioInfo) {
 		}
 		cur := map[string]any{}
 		_ = json.Unmarshal([]byte(raw), &cur)
+		prev, _ := cur["measured_sha256"].(string)
+		stale := prev != "" && prev != p.SHA256
+		if stale { // another file now: forget what the old one measured
+			for _, k := range audioAttrKeys {
+				if _, ok := measured[k]; !ok {
+					if _, had := cur[k]; had {
+						delete(cur, k)
+						changed = true
+					}
+				}
+			}
+		}
 		for k, v := range measured {
-			if _, ok := cur[k]; !ok {
+			if _, ok := cur[k]; !ok || stale {
 				cur[k] = v
 				changed = true
 			}
+		}
+		if prev != p.SHA256 {
+			cur["measured_sha256"] = p.SHA256
+			changed = true
 		}
 		if !changed {
 			return nil

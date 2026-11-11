@@ -535,6 +535,7 @@ a.chip:hover {
   display: flex;
   flex-direction: column;
   width: min(100%, var(--dialog-w, 480px));
+  max-height: min(calc(100vh - 2 * var(--sp-4)), 860px);
   max-height: min(calc(100dvh - 2 * var(--sp-4)), 860px);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);

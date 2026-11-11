@@ -285,7 +285,7 @@ func TestFitImage(t *testing.T) {
 	if r.Verdict != "problems" || r.AssetCount != 3 || len(r.LicenseProblems) != 1 || len(r.Placeholders) != 1 || len(r.MissingAttribution) != 1 {
 		t.Errorf("report: %+v", r)
 	}
-	if len(r.FitIssues) != 2 || r.FitIssues[0].Asset.ID != bad.ID || r.FitIssues[0].Errors < 2 {
+	if len(r.FitIssues) != 2 || r.FitIssues[0].Asset.ID != bad.ID || r.FitIssues[0].Errors < 1 {
 		t.Errorf("report fit issues: %+v", r.FitIssues)
 	}
 	if r.RepoDrift != nil {
@@ -404,7 +404,7 @@ func TestAudioHeaders(t *testing.T) {
 	// 24-bit stereo with an odd-sized chunk before data.
 	w := wavBytes(96000, 2, 24, 960, 0.25)
 	w = append(append([]byte{}, w[:36]...), append([]byte("LIST\x03\x00\x00\x00abc\x00"), w[36:]...)...)
-	info, err := AnalyzeAudio(write("a.wav", w))
+	info, err := AnalyzeAudio(context.Background(), write("a.wav", w))
 	if err != nil || info.SampleRate != 96000 || info.Channels != 2 || info.BitDepth != 24 || !info.Measured || math.Abs(info.PeakDBFS+12) > 0.2 {
 		t.Errorf("wav24: %v %+v", err, info)
 	}
@@ -414,7 +414,7 @@ func TestAudioHeaders(t *testing.T) {
 	ogg = append(ogg, []byte("\x01vorbis")...)
 	ogg = append(ogg, 0, 0, 0, 0, 2, 0x44, 0xAC, 0, 0) // version 0, 2 channels, 44100 Hz
 	ogg = append(ogg, make([]byte, 20)...)
-	info, err = AnalyzeAudio(write("a.ogg", ogg))
+	info, err = AnalyzeAudio(context.Background(), write("a.ogg", ogg))
 	if err != nil || info.SampleRate != 44100 || info.Channels != 2 {
 		t.Errorf("ogg: %v %+v", err, info)
 	}
@@ -426,11 +426,11 @@ func TestAudioHeaders(t *testing.T) {
 	si[12] |= 0                                                                // bit 4 of bps-1 (15) = 0
 	si[13] = 15 << 4
 	binary.BigEndian.PutUint32(si[14:], 96000)
-	info, err = AnalyzeAudio(write("a.flac", append(fl, si...)))
+	info, err = AnalyzeAudio(context.Background(), write("a.flac", append(fl, si...)))
 	if err != nil || info.SampleRate != 48000 || info.Channels != 2 || info.BitDepth != 16 || math.Abs(info.DurationS-2) > 1e-6 {
 		t.Errorf("flac: %v %+v", err, info)
 	}
-	if _, err := AnalyzeAudio(write("x.wav", []byte("nope"))); err == nil {
+	if _, err := AnalyzeAudio(context.Background(), write("x.wav", []byte("nope"))); err == nil {
 		t.Error("garbage accepted as wav")
 	}
 }

@@ -99,13 +99,13 @@ func (s *Service) ProjectReport(ctx context.Context, projectID string) (*Project
 		return ReportAsset{ID: a.ID, Name: a.Name, Type: a.Type, Status: a.Status, Detail: detail}
 	}
 	for _, a := range assets {
-		if a.Status != "superseded" {
+		if a.Status != "superseded" && a.Status != "rejected" {
 			r.TotalSize += a.TotalSize
 		}
 		lic := strings.TrimSpace(a.License)
 		switch {
 		case a.Status == "superseded": // not shipped any more
-		case lic == "" || strings.EqualFold(lic, "unknown"):
+		case noLicense(lic):
 			r.LicenseProblems = append(r.LicenseProblems, ref(a, "no license recorded"))
 		case len(brief.Licenses) > 0 && !slices.ContainsFunc(brief.Licenses, func(l string) bool { return strings.EqualFold(l, lic) }):
 			r.LicenseProblems = append(r.LicenseProblems, ref(a, fmt.Sprintf("license %s is not allowed by the brief (allowed: %s)", lic, strings.Join(brief.Licenses, ", "))))

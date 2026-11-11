@@ -3,6 +3,7 @@ package hoard
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -22,9 +23,10 @@ type AudioInfo struct {
 	// Measured only for PCM and float WAV.
 	Measured bool
 	PeakDBFS float64
-	// RMSDBFS is the RMS level over the parts of the file above -70 dBFS (block
-	// gated, no K-weighting). It stands in for loudness and is NOT true LUFS.
-	RMSDBFS float64
+	// LoudnessApprox estimates loudness in LUFS-like dB: the energy of all
+	// channels summed (as in BS.1770), averaged over the 100 ms blocks above
+	// -70 dB, minus 0.691. There is no K-weighting, so it is NOT true LUFS.
+	LoudnessApprox float64
 }
 
 const (
@@ -35,7 +37,7 @@ const (
 
 // AnalyzeAudio inspects a file. The extension selects the parser; formats
 // that are not understood return an error.
-func AnalyzeAudio(path string) (*AudioInfo, error) {
+func AnalyzeAudio(ctx context.Context, path string) (*AudioInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -47,7 +49,7 @@ func AnalyzeAudio(path string) (*AudioInfo, error) {
 	}
 	switch ext(path) {
 	case ".wav":
-		return analyzeWAV(f, st.Size())
+		return analyzeWAV(ctx, f, st.Size())
 	case ".ogg", ".oga", ".opus":
 		return analyzeOgg(f)
 	case ".flac":
@@ -63,7 +65,7 @@ func toDB(v float64) float64 {
 	return math.Max(dbfsFloor, 20*math.Log10(v))
 }
 
-func analyzeWAV(f *os.File, size int64) (*AudioInfo, error) {
+func analyzeWAV(ctx context.Context, f *os.File, size int64) (*AudioInfo, error) {
 	br := bufio.NewReaderSize(f, 64<<10)
 	var head [12]byte
 	if _, err := io.ReadFull(br, head[:]); err != nil || string(head[0:4]) != "RIFF" || string(head[8:12]) != "WAVE" {
@@ -74,7 +76,10 @@ func analyzeWAV(f *os.File, size int64) (*AudioInfo, error) {
 		info             = &AudioInfo{Format: "wav"}
 		haveFmt          bool
 	)
-	for {
+	for chunks := 0; ; chunks++ {
+		if chunks > 64 {
+			return nil, errors.New("WAV file has too many chunks before its data")
+		}
 		var ch [8]byte
 		if _, err := io.ReadFull(br, ch[:]); err != nil {
 			return nil, errors.New("WAV file has no data chunk")
@@ -115,7 +120,11 @@ func analyzeWAV(f *os.File, size int64) (*AudioInfo, error) {
 			}
 			info.DurationS = float64(n) / float64(block) / float64(info.SampleRate)
 			if (tag == 1 && (bits == 8 || bits == 16 || bits == 24 || bits == 32)) || (tag == 3 && (bits == 32 || bits == 64)) {
-				measureWAV(br, n, info, tag, bits, block)
+				// block must hold one sample per channel; a header that claims
+				// more is bogus (and an untrusted size must never size a buffer).
+				if bps := bits / 8; block >= info.Channels*bps && block <= 64 {
+					measureWAV(ctx, br, n, info, tag, bits, block)
+				}
 			}
 			return info, nil
 		default:
@@ -129,8 +138,9 @@ func analyzeWAV(f *os.File, size int64) (*AudioInfo, error) {
 	}
 }
 
-// measureWAV streams the samples once for the peak and a block-gated RMS.
-func measureWAV(r io.Reader, n int64, info *AudioInfo, tag, bits, block int) {
+// measureWAV streams the samples once, in a fixed 64 KiB buffer of whole
+// blocks, for the peak and the block-gated energy.
+func measureWAV(ctx context.Context, r io.Reader, n int64, info *AudioInfo, tag, bits, block int) {
 	if n > maxAnalyzeBytes {
 		n = maxAnalyzeBytes
 	}
@@ -140,32 +150,31 @@ func measureWAV(r io.Reader, n int64, info *AudioInfo, tag, bits, block int) {
 		return
 	}
 	blockFrames := max(1, info.SampleRate/10)
-	buf := make([]byte, block*4096)
+	perRead := (64 << 10) / block
+	buf := make([]byte, perRead*block)
 	var (
 		peak, blockSum, gatedSum float64
-		blockN, gatedN           int
-		blockSamples             = blockFrames * info.Channels
-		samples                  int
+		bFrames, gatedN, total   int
 	)
 	flush := func() {
-		if blockN == 0 {
+		if bFrames == 0 {
 			return
 		}
-		ms := blockSum / float64(blockN)
-		if ms > silenceFloor {
+		// Sum of the per-channel mean squares.
+		if ms := blockSum / float64(bFrames); ms > silenceFloor {
 			gatedSum += ms
 			gatedN++
 		}
-		blockSum, blockN = 0, 0
+		blockSum, bFrames = 0, 0
 	}
 	remaining := frames
-	for remaining > 0 {
-		want := min(remaining, 4096)
+	for remaining > 0 && ctx.Err() == nil {
+		want := min(remaining, perRead)
 		got, err := io.ReadFull(r, buf[:want*block])
 		have := got / block
 		for i := range have {
 			frame := buf[i*block : i*block+block]
-			for c := 0; c < info.Channels && (c+1)*bps <= len(frame); c++ {
+			for c := 0; c < info.Channels; c++ {
 				var v float64
 				b := frame[c*bps : (c+1)*bps]
 				switch {
@@ -190,11 +199,11 @@ func measureWAV(r io.Reader, n int64, info *AudioInfo, tag, bits, block int) {
 					peak = a
 				}
 				blockSum += v * v
-				blockN++
-				samples++
-				if blockN >= blockSamples {
-					flush()
-				}
+			}
+			bFrames++
+			total++
+			if bFrames >= blockFrames {
+				flush()
 			}
 		}
 		remaining -= have
@@ -202,20 +211,18 @@ func measureWAV(r io.Reader, n int64, info *AudioInfo, tag, bits, block int) {
 			break
 		}
 	}
-	if samples == 0 {
+	if total == 0 || ctx.Err() != nil {
 		return
 	}
 	// A trailing partial block shorter than half of a full one is ignored.
-	if blockN*2 >= blockSamples {
+	if bFrames*2 >= blockFrames {
 		flush()
 	}
 	info.Measured = true
 	info.PeakDBFS = toDB(peak)
-	switch {
-	case gatedN > 0:
-		info.RMSDBFS = toDB(math.Sqrt(gatedSum / float64(gatedN)))
-	default:
-		info.RMSDBFS = dbfsFloor // digital silence
+	info.LoudnessApprox = dbfsFloor // digital silence
+	if gatedN > 0 {
+		info.LoudnessApprox = math.Max(dbfsFloor, 10*math.Log10(gatedSum/float64(gatedN))-0.691)
 	}
 }
 

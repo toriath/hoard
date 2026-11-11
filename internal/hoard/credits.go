@@ -27,18 +27,36 @@ type Credits struct {
 
 var reSPDX = regexp.MustCompile(`^(CC0|CC-BY|MIT|Apache|OFL|GPL|LGPL|AGPL|BSD|MPL|ISC|Unlicense|Zlib|BSL|CDLA|ODbL|WTFPL|Artistic)[A-Za-z0-9.+-]*$`)
 
+var reWWW = regexp.MustCompile(`(?i)\bwww\.`)
+
+// stripInvisible removes bidirectional controls and zero-width characters,
+// which could reorder or hide text in a credits file.
+func stripInvisible(r rune) rune {
+	switch {
+	case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069, r >= 0x200B && r <= 0x200F, r == 0x2060, r == 0xFEFF, r == 0x00AD:
+		return -1
+	}
+	return r
+}
+
 // mdEscape makes untrusted text inert in Markdown (and in HTML, which most
 // Markdown renderers pass through): every character with a meaning is
-// backslash-escaped and line breaks become spaces.
+// backslash-escaped, line breaks become spaces, invisible and bidi characters
+// are dropped, and the characters that start GitHub-style autolinks (the colon
+// of http:// and mailto:, the dot of www. and the @ of addresses) are escaped
+// so that text never turns into a link on its own.
 func mdEscape(s string) string {
-	s = strings.ToValidUTF8(s, "")
+	s = strings.Map(stripInvisible, strings.ToValidUTF8(s, ""))
+	s = reWWW.ReplaceAllStringFunc(s, func(m string) string { return m[:3] + "\u0001" })
 	var b strings.Builder
 	for _, r := range s {
 		switch {
+		case r == '\u0001':
+			b.WriteString("\\.")
 		case r == '\n' || r == '\r' || r == '\t':
 			b.WriteByte(' ')
 		case r < 0x20 || r == 0x7f:
-		case strings.ContainsRune("\\`*_{}[]<>#!|~&", r):
+		case strings.ContainsRune("\\`*_{}[]<>#!|~&:@", r):
 			b.WriteByte('\\')
 			b.WriteRune(r)
 		default:
@@ -46,6 +64,12 @@ func mdEscape(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// noLicense reports whether a license value says nothing.
+func noLicense(lic string) bool {
+	lic = strings.TrimSpace(lic)
+	return lic == "" || strings.EqualFold(lic, "unknown")
 }
 
 // mdLink renders a URL as a Markdown autolink when it is a plain http(s) URL,
@@ -94,7 +118,8 @@ func (s *Service) ProjectCredits(ctx context.Context, projectID string) (*Credit
 		}
 		c.AssetCount++
 		lic := strings.TrimSpace(a.License)
-		if lic == "" {
+		if noLicense(lic) {
+			lic = ""
 			c.NeedsAttention = append(c.NeedsAttention, CreditIssue{a.ID, a.Name, "no license recorded"})
 		} else if needsAttribution(lic) && strings.TrimSpace(a.Attribution) == "" {
 			c.NeedsAttention = append(c.NeedsAttention, CreditIssue{a.ID, a.Name, "license " + lic + " requires attribution, none recorded"})

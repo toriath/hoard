@@ -103,6 +103,12 @@ func TestBriefREST(t *testing.T) {
 	if !codes["max_texture_size"] || !codes["palette"] || !codes["attribution_missing"] {
 		t.Errorf("fit codes: %v", codes)
 	}
+	// A chunked, empty body is fine too.
+	req, _ := http.NewRequest("POST", e.ts.URL+"/api/v1/assets/"+good.ID+"/fit", io.NopCloser(strings.NewReader("")))
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusOK {
+		t.Errorf("empty chunked fit body: %v %v", err, resp)
+	}
 	e.do("POST", "/api/v1/assets/"+good.ID+"/fit", `{"project_id":"`+prj.ID+`"}`, nil, http.StatusOK, &fit)
 	if fit.Reports[0].Errors != 0 || fit.Reports[0].Warnings != 0 {
 		t.Errorf("good asset: %+v", fit.Reports[0])
@@ -153,6 +159,9 @@ func TestProjectBundle(t *testing.T) {
 
 	// The signed-in variant: one folder per asset, plus CREDITS.md.
 	res := e.do("GET", "/api/v1/projects/"+prj.ID+"/bundle", nil, nil, http.StatusOK, nil)
+	if res.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("bundle Cache-Control = %q", res.Header.Get("Cache-Control"))
+	}
 	body, _ := io.ReadAll(res.Body)
 	files := zipNames(t, body)
 	if _, ok := files["CREDITS.md"]; !ok || files["tile_a/tile_a.png"] == "" || files["tile_b/tile_b.png"] == "" || files["tile_a/asset.json"] == "" {
@@ -185,6 +194,9 @@ func TestProjectBundle(t *testing.T) {
 	}
 	e.send(anon, "GET", "/api/v1/projects/"+prj.ID+"/bundle", nil, nil, http.StatusUnauthorized, nil)
 	res = e.send(anon, "GET", link(prj.ID, exp, sig), nil, nil, http.StatusOK, nil)
+	if res.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("signed bundle Cache-Control = %q", res.Header.Get("Cache-Control"))
+	}
 	body, _ = io.ReadAll(res.Body)
 	if zipNames(t, body)["CREDITS.md"] == "" {
 		t.Error("signed bundle lacks CREDITS.md")
@@ -274,6 +286,19 @@ func TestMCPBrief(t *testing.T) {
 	out, _ = call("check_asset_fit", map[string]any{"asset_ids": []string{solo.ID}})
 	if n, _ := out["results"].([]any)[0].(map[string]any)["note"].(string); !strings.Contains(n, "project_id") {
 		t.Errorf("asset without project: %v", out)
+	}
+	// One unknown id does not abort the others.
+	out, res = call("check_asset_fit", map[string]any{"asset_ids": []string{"ast_000000000000", good.ID}})
+	rs := out["results"].([]any)
+	if res.IsError || len(rs) != 2 || rs[0].(map[string]any)["error"] == nil || rs[1].(map[string]any)["error"] != nil || len(rs[1].(map[string]any)["reports"].([]any)) != 1 {
+		t.Errorf("partial results: %v", out)
+	}
+	if _, res = call("check_asset_fit", map[string]any{"asset_ids": []string{good.ID}, "project_id": "prj_nope"}); !res.IsError {
+		t.Error("unknown project accepted")
+	}
+	// Unknown brief fields are refused with a hint.
+	if _, res = call("set_project_brief", map[string]any{"project_id": prj.ID, "brief": map[string]any{"Engine": "godot"}}); !res.IsError {
+		t.Error("miscased field accepted")
 	}
 	many := make([]string, 51)
 	for i := range many {

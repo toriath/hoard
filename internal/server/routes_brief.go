@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/toriath/hoard/internal/hoard"
@@ -86,6 +87,7 @@ func (s *Server) bundle(w http.ResponseWriter, r *http.Request, projectID string
 	if err != nil {
 		return err
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	credits, err := s.svc.ProjectCredits(r.Context(), projectID)
 	if err != nil {
 		return err
@@ -125,8 +127,10 @@ func (s *Server) handleFit(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
 		ProjectID string `json:"project_id"`
 	}
-	if r.ContentLength != 0 {
-		if err := readJSONLimit(w, r, &in, 4<<10); err != nil {
+	// The body is optional (an empty or chunked-and-empty body means "every project").
+	if err := readJSONLimit(w, r, &in, 4<<10); err != nil {
+		var ae *apiError
+		if !(errors.As(err, &ae) && ae.Message == "request body is empty") {
 			return err
 		}
 	}
