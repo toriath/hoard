@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { fileDownloadUrl, rawUrl } from '../lib/api'
 import { stopPreview } from '../lib/audio'
 import { formatBytes, formatDuration } from '../lib/format'
+import { seekTarget } from '../lib/seek'
 import { parseSprite } from '../lib/sprite'
 import { MAX_DECODE_SECONDS, computePeaks, decodeAudio, drawWaveform, loadFont } from '../lib/thumbs'
 import type { Asset, AssetFile } from '../lib/types'
@@ -134,12 +135,26 @@ function AudioPlayer({ url, color }: { url: string; file: AssetFile; color: stri
   }, [playing])
 
   const toggle = () => (audio.current?.paused ? audio.current.play() : audio.current?.pause())
-  const seek = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const seekTo = (t: number) => {
     const a = audio.current
     if (!a || !duration) return
-    const r = e.currentTarget.getBoundingClientRect()
-    a.currentTime = ((e.clientX - r.left) / r.width) * duration
+    a.currentTime = t
     setTime(a.currentTime)
+  }
+  const seek = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    seekTo(((e.clientX - r.left) / r.width) * duration)
+  }
+  const seekKey = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (e.key === ' ') {
+      e.preventDefault()
+      toggle()
+      return
+    }
+    const t = seekTarget(e.key, audio.current?.currentTime ?? time, duration)
+    if (t === null) return
+    e.preventDefault()
+    seekTo(t)
   }
 
   return (
@@ -154,7 +169,21 @@ function AudioPlayer({ url, color }: { url: string; file: AssetFile; color: stri
         onError={() => setWaveNote('This browser cannot play this file')}
         onEnded={() => setTime(0)}
       />
-      <canvas ref={canvas} className="wave" onClick={seek} />
+      <canvas
+        ref={canvas}
+        className="wave"
+        onClick={seek}
+        onKeyDown={seekKey}
+        tabIndex={duration ? 0 : -1}
+        role="slider"
+        aria-label="Seek"
+        aria-orientation="horizontal"
+        aria-disabled={!duration}
+        aria-valuemin={0}
+        aria-valuemax={duration ? Math.round(duration * 10) / 10 : 0}
+        aria-valuenow={Math.round(time * 10) / 10}
+        aria-valuetext={`${formatDuration(time)} of ${formatDuration(duration)}`}
+      />
       {!peaks && <div className="wave-placeholder muted">{waveNote}</div>}
       <div className="row audio-controls">
         <button className="btn btn-primary btn-icon play" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}>

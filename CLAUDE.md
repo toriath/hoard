@@ -63,7 +63,6 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - Revoking an API token does not revoke signed links it was already given (two hours at most). The link-signing key cannot be rotated without editing the database.
 - Uploading a folder flattens it: relative paths are not kept, so files with the same name in one asset replace each other.
 - The `show_assets` gallery plays only audio files up to 2 MiB and shows thumbnails only; video, 3D and larger audio need the web UI. It is stateless: reopening a conversation starts with nothing ticked.
-- The waveform cannot be scrubbed from the keyboard.
 - The image job has registry write permission also on pull requests from branches of this repository (forks and Dependabot get a read-only token).
 
 ## Conventions
