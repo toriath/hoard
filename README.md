@@ -19,6 +19,7 @@ A self-hosted database for game assets: sprites, 3D models, textures, SFX, music
 - [Reach it over your tailnet](#reach-it-over-your-tailnet)
 - [Connect Claude (MCP)](#connect-claude-mcp)
 - [History, recipes and tags](#history-recipes-and-tags)
+- [Project briefs and health](#project-briefs-and-health)
 - [The built-in AI agent](#the-built-in-ai-agent)
 - [What an asset holds](#what-an-asset-holds)
 - [Where your data lives](#where-your-data-lives)
@@ -145,6 +146,12 @@ Metadata travels through tool calls. Binary files do not pass through the model:
 | `analyze_assets` | Run the built-in AI agent |
 | `recent_changes` | What changed since a time or a sequence number: who did what to which asset, so an agent resuming work sees what people and other agents did. Returns `latest_seq` for polling with `after_seq` |
 | `get_recipe` | Prompt, generator recipe and `derived_from` chain of an asset, with a hint on how to regenerate or vary it |
+| `get_project_brief` / `set_project_brief` | Read and change what a project needs from its assets (engine, palette, sizes, formats, audio, licenses, repository folders) |
+| `check_asset_fit` | Check up to 50 assets against a project's brief, with concrete findings |
+| `project_report` | Health of a project: license problems, placeholders, assets that do not fit, size budget, open requests, drift against the repository |
+| `get_project_credits` | CREDITS.md for a project, plus a signed command that downloads every asset with it |
+
+The brief is also available as the resource template `hoard://project/{id}/brief` (JSON).
 
 `asset_media` also exists; the gallery uses it to play audio and it is of no use to an agent.
 
@@ -156,6 +163,37 @@ The same token works for the REST API under `/api/v1`; see [`docs/api.md`](docs/
 - **Lineage and recipes.** An asset can record the asset it was made from (`derived_from`) and a structured generator recipe (tool, model, seed, steps, cfg, size, negative prompt…). The drawer shows the recipe with copy buttons for prompt and seed, plus the parent, variations and replacements as thumbnails. `get_recipe` gives an agent the same, with a hint on how to reproduce the asset or make a variation.
 - **Generator metadata import.** When a file is added, hoard looks for the recipe the generator left behind and fills prompt and recipe where they are still empty (never overwriting what is there): Automatic1111 / Forge `parameters` text and ComfyUI `prompt`/`workflow` chunks in PNG files, Draw Things metadata (see the caveat in `CLAUDE.md`), and the `.json` sidecar that audio-studio writes next to a sound file. Failures are ignored; an upload never fails because of this. An imported recipe shows up in the activity feed as *generator metadata imported*.
 - **Tags.** The **Tags** page lists all tags with counts, searches and sorts them, renames them (asking before merging into an existing tag), deletes them, merges several selected tags into one and opens the library filtered by a tag.
+
+## Project briefs and health
+
+A project can carry a **brief**: what the game needs from its assets. Agents read it before they create or pick assets, and hoard checks assets against it. Set it on the project page (**Brief → Set up**) or with `set_project_brief`. Every field is optional; an empty brief means nothing is known and nothing is checked.
+
+| Field | Meaning |
+| --- | --- |
+| `engine`, `engine_version` | `godot`, `unity`, `unreal`, `phaser`, `bevy`, `love2d`, `gamemaker`, `web` or `custom` |
+| `art_direction`, `notes` | Free text for people and agents |
+| `pixel_art`, `palette` | Pixel art flag; palette as `#rrggbb` colours |
+| `tile_size`, `base_resolution` | Tile edge in px; `320x180` |
+| `max_texture_size`, `power_of_two` | Longest edge in px; whether textures must be power-of-two |
+| `formats` | Accepted file extensions per asset type, lowercase without dot: `{"sprite": ["png"], "sfx": ["wav", "ogg"]}` |
+| `audio` | `sample_rate`, `channels`, `loudness_lufs`, `max_peak_dbfs` |
+| `licenses` | Allowed licenses (empty: any) |
+| `folders` | Repository folder per asset type, plus `default`: `{"sprite": "assets/sprites"}` |
+| `naming` | `snake_case`, `kebab-case`, `camelCase`, `PascalCase` or `keep` |
+| `size_budget_mb` | Budget for the assets of the project |
+
+Saving merges: a field you send replaces the stored value as a whole, `null` clears it, fields you leave out stay. The result is validated (hex colours, positive numbers, extensions without dot, folders that are relative and free of `..`) and limited to 32 KiB.
+
+**Fit check.** `check_asset_fit`, and the *Fit* section of the asset drawer, compare an asset with the brief of a project and report errors, warnings and information with concrete numbers (`44100 Hz, project wants 48000 Hz.`). It checks the accepted formats, image size, power-of-two and tile size, how much of an image is off the palette, sample rate and channels of WAV, FLAC and Ogg files, the peak level of WAV files, allowed licenses, attribution for CC-BY licenses, review status and size. Two limits to know:
+
+- The loudness it reports is an estimate from a PCM WAV file: the summed energy of all channels over the non-silent 100 ms blocks, minus 0.691 as in ITU-R BS.1770. It is not true LUFS (no K-weighting), so it only flags clear misses (more than 3 dB), and for sound effects only as information. Peak and loudness are not measured for Ogg, FLAC or MP3; for those only the header is read.
+- Palette conformity decodes the image with the same memory limit and one-at-a-time rule as thumbnails; pixels within 16 RGB units of a palette colour count as on the palette, and transparent or anti-aliased edge pixels are ignored.
+
+A fit check also stores the measured audio values (`duration_s`, `sample_rate`, `channels`, `bit_depth`, `peak_dbfs`) in the asset's attributes when it has none yet, or when the primary file changed since (`measured_sha256`). Trashed assets are skipped. That does not change the asset's "changed" time or the activity feed.
+
+**Project report.** It never decodes or writes anything, so the project page stays cheap: image palette is not part of it, and audio is judged from the values stored by an earlier fit check (and says "not measured yet" otherwise). The project page shows a health section and `project_report` returns it: a verdict (`ok`, `attention`, `problems`), assets with license problems or missing attribution, placeholders still in use, assets in rework, rejected or superseded, assets that do not fit, size against the budget, open requests, and assets whose files are missing from the last repository snapshot (only when one exists).
+
+**Credits.** *Credits* on the project page (and `get_project_credits`) writes a `CREDITS.md`: assets grouped by license with author, source and license links, and a *needs attention* list for assets without a license or with CC-BY and no attribution. All stored text is escaped, so a name cannot inject Markdown or HTML. The bundle download is a zip with one folder per asset (as in the other zip downloads) and `CREDITS.md` at the root; rejected and superseded assets are left out. The fit checks, report and credits are verified by tests with generated images and WAV files; the Ogg and FLAC header readers only against hand-built headers, not against files from real encoders.
 
 ## The built-in AI agent
 

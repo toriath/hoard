@@ -1,6 +1,7 @@
 import { Download, Pencil, Plus, Search, Sparkles, Trash2, Upload } from 'lucide-react'
 import { useState } from 'react'
 import { getMeta, toast } from '../lib/store'
+import { SeverityIcon } from './panels/Fit'
 import { Button, Check, Chip, CodeBlock, Dialog, Empty, Field, Menu, Tabs, TagInput, TypeBadge, typeColor, typeIcon } from '../ui'
 
 const COLORS = ['bg', 'surface-1', 'surface-2', 'surface-3', 'border', 'border-strong', 'text', 'text-muted', 'text-faint', 'accent', 'accent-hover', 'accent-soft', 'danger', 'success', 'warning', 'info']
@@ -164,6 +165,30 @@ export function DesignSystem() {
           </Empty>
         </div>
         <CodeBlock code={'claude mcp add --transport http hoard http://nas.local:8080/mcp'} />
+      </section>
+
+      <section className="stack">
+        <h2>Brief and fit</h2>
+        <div className="row-wrap">
+          <span className="swatches">
+            {['#1a1c2c', '#5d275d', '#b13e53', '#ef7d57', '#ffcd75'].map((c) => (
+              <span key={c} className="swatch" style={{ background: c }} title={c} />
+            ))}
+          </span>
+          <span className="muted">Palette swatches</span>
+        </div>
+        <details className="fit" open>
+          <summary>
+            <SeverityIcon severity="error" />
+            <span className="grow">Fit finding group</span>
+            <span className="muted">1 error, 1 warning</span>
+          </summary>
+          <ul className="fit-list">
+            <li><SeverityIcon severity="error" /><span>44100 Hz, project wants 48000 Hz.</span></li>
+            <li><SeverityIcon severity="warning" /><span>Image is 100x100 px; the project wants power-of-two dimensions.</span></li>
+            <li><SeverityIcon severity="info" /><span>Total size 12.3 kB (0.0% of the 200 MB budget).</span></li>
+          </ul>
+        </details>
       </section>
 
       {dialog && (
