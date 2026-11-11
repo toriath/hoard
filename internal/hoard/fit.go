@@ -613,7 +613,8 @@ func (s *Service) storeAudioAttrs(a *Asset, p *File, info *AudioInfo) {
 	}
 	ctx := context.Background()
 	changed := false
-	// TODO(lock): hold the asset lock (lockAssets) around this read-modify-write.
+	unlock := s.lockAssets(a.ID)
+	defer unlock()
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		var raw string
 		if err := tx.QueryRowContext(ctx, `SELECT attrs FROM assets WHERE id = ?`, a.ID).Scan(&raw); err != nil {

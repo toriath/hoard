@@ -118,7 +118,7 @@ func (s *Service) storeImageStats(ctx context.Context, assetID, fileID string, s
 	if hash == "" {
 		hash = phashNone
 	}
-	// TODO(lock): serialise with other mutations of this asset (lockAssets) once available.
+	defer s.lockAssets(assetID)()
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		// The statistics describe the primary file; if it changed while the
 		// image was decoded, they are stale and dropped.

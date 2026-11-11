@@ -271,7 +271,7 @@ func TestMCP(t *testing.T) {
 		} `json:"tools"`
 	}
 	mcpCall(e, "tools/list", map[string]any{}, &tools)
-	if len(tools.Tools) < 22 { // the core tools; feature areas add more
+	if len(tools.Tools) != 52 { // update when adding or removing a tool, and the README tool table with it
 		t.Errorf("%d tools", len(tools.Tools))
 	}
 

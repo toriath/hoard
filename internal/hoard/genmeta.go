@@ -74,6 +74,7 @@ func truncateUTF8(s string, n int) string {
 // generator keys the asset does not have yet. A generator that already names a
 // tool is never touched, so keys of another tool are not mixed into it.
 func (s *Service) applyImported(ctx context.Context, assetID string, imp *imported) error {
+	defer s.lockAssets(assetID)()
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		var prompt, genJSON string
 		if err := tx.QueryRowContext(ctx, `SELECT prompt, generator FROM assets WHERE id = ?`, assetID).Scan(&prompt, &genJSON); err != nil {

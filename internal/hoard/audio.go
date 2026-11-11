@@ -628,7 +628,7 @@ func (s *Service) setMeasuredAttrs(ctx context.Context, assetID string, add map[
 
 // writeAttrs applies fn to the attributes of an asset in one transaction.
 func (s *Service) writeAttrs(ctx context.Context, assetID string, fn func(map[string]any) bool) error {
-	// TODO(lock): serialise with other mutations of this asset (lockAssets) once available.
+	defer s.lockAssets(assetID)()
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		var raw string
 		if err := tx.QueryRowContext(ctx, `SELECT attrs FROM assets WHERE id = ?`, assetID).Scan(&raw); err != nil {
