@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hoard assets</title>
+<!--
+  The view behind the show_assets tool (see gallery.go). It is one file on
+  purpose: a client loads it into a sandboxed frame whose default policy
+  allows inline script and style and data: URLs, and nothing from the network.
+
+  It talks to the client with JSON-RPC over postMessage (MCP Apps, protocol
+  2026-01-26). Everything it shows comes from the tool result or from tool
+  calls the client proxies; asset text is only ever written with textContent,
+  and only asset ids are sent back into the conversation.
+-->
+<style>
+  :root {
+    --f-bg: #ffffff; --f-bg2: #f3f2ef; --f-bg3: #e8e6e1; --f-fg: #1c1b19; --f-fg2: #5e5c57;
+    --f-line: #d8d6d0; --f-accent: #2f6feb; --f-danger: #b3261e;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --f-bg: #1f1e1c; --f-bg2: #2a2926; --f-bg3: #353330; --f-fg: #f1efea; --f-fg2: #a9a69f;
+      --f-line: #45433f; --f-accent: #7aa7ff; --f-danger: #f2b8b5;
+    }
+  }
+  :root[data-theme="dark"] {
+    --f-bg: #1f1e1c; --f-bg2: #2a2926; --f-bg3: #353330; --f-fg: #f1efea; --f-fg2: #a9a69f;
+    --f-line: #45433f; --f-accent: #7aa7ff; --f-danger: #f2b8b5;
+  }
+  :root {
+    --bg: var(--color-background-primary, var(--f-bg));
+    --bg2: var(--color-background-secondary, var(--f-bg2));
+    --bg3: var(--color-background-tertiary, var(--f-bg3));
+    --fg: var(--color-text-primary, var(--f-fg));
+    --fg2: var(--color-text-secondary, var(--f-fg2));
+    --line: var(--color-border-primary, var(--f-line));
+    --accent: var(--color-ring-primary, var(--f-accent));
+    --danger: var(--color-text-danger, var(--f-danger));
+    --radius: var(--border-radius-md, 8px);
+    --small: var(--font-text-sm-size, 13px);
+    --tiny: var(--font-text-xs-size, 12px);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font: var(--small)/1.4 var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+    color: var(--fg); background: transparent; padding: 12px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  body.full { height: 100vh; }
+  header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  h1 { font-size: var(--font-heading-sm-size, 15px); font-weight: var(--font-weight-semibold, 600); margin: 0; flex: 1 1 12em; overflow-wrap: anywhere; }
+  .muted { color: var(--fg2); font-size: var(--tiny); }
+  /* Inline, the list scrolls inside a bounded box so a long result does not
+     push the conversation away; full screen, it takes the room there is. */
+  #scroll { overflow: auto; max-height: 460px; margin: -3px; padding: 3px; }
+  body.full #scroll { max-height: none; flex: 1 1 0; min-height: 0; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
+  .card { position: relative; background: var(--bg2); border: 1px solid var(--line); border-radius: var(--radius); display: flex; flex-direction: column; min-width: 0; }
+  .card:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .card label { display: block; cursor: pointer; padding: 6px 6px 2px; min-width: 0; }
+  .thumb { aspect-ratio: 1; background: var(--bg3); border-radius: calc(var(--radius) - 3px); display: grid; place-items: center; overflow: hidden; }
+  .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .thumb img.pixel { image-rendering: pixelated; }
+  .thumb span { color: var(--fg2); font-size: var(--tiny); letter-spacing: .06em; text-transform: uppercase; }
+  .name { display: block; margin-top: 6px; font-weight: var(--font-weight-medium, 500); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card input[type="checkbox"] { position: absolute; top: 10px; left: 10px; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  .row { display: flex; gap: 6px; padding: 4px 6px 6px; margin-top: auto; }
+  .row:empty { padding-top: 0; }
+  button {
+    font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+    border-radius: calc(var(--radius) - 2px); padding: 3px 9px; cursor: pointer; min-height: 26px;
+  }
+  button:hover:not(:disabled) { background: var(--bg3); }
+  button:disabled { opacity: .55; cursor: default; }
+  button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  button.primary:hover:not(:disabled) { background: var(--fg); opacity: .88; }
+  .row button { flex: 1 1 0; padding: 2px 4px; font-size: var(--tiny); min-width: 0; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  footer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  footer .grow { flex: 1 1 8em; min-width: 0; overflow-wrap: anywhere; }
+  #state { padding: 18px 4px; color: var(--fg2); }
+  #state.error { color: var(--danger); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">hoard assets</h1>
+  <span id="count" class="muted"></span>
+  <button id="expand" type="button" hidden>Full screen</button>
+</header>
+<div id="state" role="status">Loading assets…</div>
+<div id="scroll" hidden><div id="grid"></div></div>
+<footer id="footer" hidden>
+  <span id="picked" class="grow muted" role="status"></span>
+  <button id="clear" type="button" disabled>Clear</button>
+  <button id="use" type="button" class="primary" disabled>Use selected</button>
+</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  const PROTOCOL = '2026-01-26';
+  const ID = /^ast_[0-9a-z]{12}$/;
+  const IMAGE = /^image\/(png|jpeg|webp|gif)$/;
+  const AUDIO = /^audio\/[a-z0-9.+-]+$/;
+  const $ = (id) => document.getElementById(id);
+  const host = window.parent;
+
+  // ---- JSON-RPC over postMessage ----
+  let seq = 0;
+  const waiting = new Map();
+  // The frame cannot know the client's origin; nothing sent here is secret.
+  const post = (msg) => host.postMessage({ jsonrpc: '2.0', ...msg }, '*');
+  const notify = (method, params) => post({ method, params: params || {} });
+  const request = (method, params) => new Promise((resolve, reject) => {
+    const id = ++seq;
+    waiting.set(id, { resolve, reject });
+    post({ id, method, params: params || {} });
+  });
+
+  window.addEventListener('message', (e) => {
+    const m = e.data;
+    if (e.source !== host || !m || m.jsonrpc !== '2.0') return;
+    if (typeof m.method === 'string') {
+      if (m.id !== undefined) answer(m); else notified(m.method, m.params || {});
+      return;
+    }
+    const w = waiting.get(m.id);
+    if (!w) return;
+    waiting.delete(m.id);
+    if (m.error) w.reject(Object.assign(new Error(String(m.error.message || 'request failed')), { rpc: true }));
+    else w.resolve(m.result || {});
+  });
+
+  function answer(m) {
+    if (m.method === 'ping') return post({ id: m.id, result: {} });
+    if (m.method === 'ui/resource-teardown') { stopAudio(); return post({ id: m.id, result: {} }); }
+    post({ id: m.id, error: { code: -32601, message: 'Method not found' } });
+  }
+
+  function notified(method, p) {
+    switch (method) {
+      case 'ui/notifications/tool-input':
+        if (p.arguments && typeof p.arguments.title === 'string') setTitle(p.arguments.title);
+        break;
+      case 'ui/notifications/tool-result': showResult(p); break;
+      case 'ui/notifications/tool-cancelled': setState('The search was cancelled.', true); break;
+      case 'ui/notifications/host-context-changed': applyContext(p); break;
+    }
+  }
+
+  // ---- client context: theme, display mode ----
+  let caps = {};
+  function applyContext(ctx) {
+    const root = document.documentElement;
+    if (ctx.theme === 'light' || ctx.theme === 'dark') {
+      root.dataset.theme = ctx.theme;
+      root.style.colorScheme = ctx.theme;
+    }
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars && typeof vars === 'object') {
+      for (const [k, v] of Object.entries(vars)) {
+        if (/^--[a-z0-9-]+$/.test(k) && typeof v === 'string') root.style.setProperty(k, v);
+      }
+    }
+    if (Array.isArray(ctx.availableDisplayModes)) {
+      $('expand').dataset.can = ctx.availableDisplayModes.includes('fullscreen') ? '1' : '';
+    }
+    if (typeof ctx.displayMode === 'string') setMode(ctx.displayMode);
+    else setMode(document.body.classList.contains('full') ? 'fullscreen' : 'inline');
+  }
+  function setMode(mode) {
+    const full = mode === 'fullscreen';
+    document.body.classList.toggle('full', full);
+    $('expand').hidden = full || !$('expand').dataset.can;
+  }
+  $('expand').addEventListener('click', () => {
+    request('ui/request-display-mode', { mode: 'fullscreen' }).then((r) => setMode(r.mode), () => {});
+  });
+
+  // ---- tool result -> gallery ----
+  let items = [];
+  const picked = new Set();
+
+  function setTitle(t) { $('title').textContent = t.trim() || 'hoard assets'; }
+  function setState(text, isError) {
+    $('state').textContent = text;
+    $('state').classList.toggle('error', !!isError);
+    $('state').hidden = false;
+    $('scroll').hidden = true;
+    $('footer').hidden = true;
+  }
+
+  function firstText(result) {
+    const c = Array.isArray(result.content) ? result.content.find((x) => x && x.type === 'text') : null;
+    return c && typeof c.text === 'string' ? c.text : '';
+  }
+
+  function showResult(result) {
+    if (result.isError) return setState(firstText(result) || 'hoard could not list the assets.', true);
+    let data = result.structuredContent;
+    if (!data || typeof data !== 'object') {
+      try { data = JSON.parse(firstText(result)); } catch { data = null; }
+    }
+    if (!data || !Array.isArray(data.assets)) return setState('hoard returned nothing that can be shown.', true);
+
+    if (typeof data.title === 'string' && data.title.trim()) setTitle(data.title);
+    items = data.assets.filter((a) => a && typeof a.id === 'string' && ID.test(a.id));
+    picked.clear();
+    stopAudio();
+    if (!items.length) return setState('No assets match.');
+
+    const total = Number.isFinite(data.total) ? data.total : items.length;
+    $('count').textContent = total > items.length ? `${items.length} of ${total}` : `${items.length}`;
+    const grid = $('grid');
+    grid.replaceChildren(...items.map(card));
+    $('state').hidden = true;
+    $('scroll').hidden = false;
+    $('footer').hidden = false;
+    updatePicked(false);
+    watchThumbs();
+  }
+
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  const str = (v) => (typeof v === 'string' ? v : '');
+
+  function size(n) {
+    if (!Number.isFinite(n) || n <= 0) return '';
+    const u = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return `${n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)} ${u[i]}`;
+  }
+
+  function card(a) {
+    const c = el('div', 'card');
+    c.dataset.id = a.id;
+
+    const box = el('input');
+    box.type = 'checkbox';
+    box.id = 'pick-' + a.id;
+    box.addEventListener('change', () => {
+      if (box.checked) picked.add(a.id); else picked.delete(a.id);
+      updatePicked(true);
+    });
+
+    const label = el('label');
+    label.htmlFor = box.id;
+    const tags = Array.isArray(a.tags) ? a.tags.filter((t) => typeof t === 'string') : [];
+    label.title = [str(a.description), tags.join(', ')].filter(Boolean).join('\n');
+    const thumb = el('span', 'thumb');
+    thumb.append(el('span', '', str(a.type) || 'asset'));
+    label.append(thumb, el('span', 'name', str(a.name) || a.id),
+      el('span', 'meta muted', [str(a.type), str(a.dimensions) || size(a.size), str(a.license)].filter(Boolean).join(' · ')));
+
+    const row = el('div', 'row');
+    if (typeof a.audio_file === 'string' && a.audio_file) {
+      const play = el('button', '', 'Play');
+      play.type = 'button';
+      play.setAttribute('aria-label', 'Play ' + (str(a.name) || a.id));
+      play.addEventListener('click', () => togglePlay(a, play));
+      row.append(play);
+    }
+    if (caps.openLinks && /^https?:\/\//.test(str(a.web_url))) {
+      const open = el('button', '', 'Open');
+      open.type = 'button';
+      open.setAttribute('aria-label', 'Open ' + (str(a.name) || a.id) + ' in hoard');
+      open.addEventListener('click', () => { request('ui/open-link', { url: a.web_url }).catch(() => {}); });
+      row.append(open);
+    }
+    c.append(box, label, row);
+    return c;
+  }
+
+  // ---- thumbnails, fetched through the client as each card scrolls into view ----
+  const callTool = (name, args) => request('tools/call', { name, arguments: args }).then((r) => {
+    if (r.isError) throw new Error(firstText(r) || 'tool failed');
+    return r;
+  });
+
+  let queue = [], running = 0, toolsBroken = false;
+  function pump() {
+    while (running < 4 && queue.length && !toolsBroken) {
+      const a = queue.shift();
+      running++;
+      loadThumb(a).finally(() => { running--; pump(); });
+    }
+  }
+  async function loadThumb(a) {
+    let r;
+    try { r = await callTool('view_asset', { id: a.id }); } catch (err) {
+      // A protocol error (not a tool error) means this client does not let
+      // the view call tools: stop asking and keep the placeholders.
+      if (err.rpc) toolsBroken = true;
+      return;
+    }
+    const img = r.content && r.content.find((x) => x && x.type === 'image');
+    const node = document.querySelector(`.card[data-id="${a.id}"] .thumb`);
+    if (!img || !node || !IMAGE.test(img.mimeType) || typeof img.data !== 'string') return;
+    const pic = el('img');
+    pic.alt = '';
+    pic.decoding = 'async';
+    const m = /^(\d+)x(\d+)$/.exec(str(a.dimensions));
+    if (m && Math.max(+m[1], +m[2]) <= 96) pic.className = 'pixel';
+    pic.addEventListener('load', () => node.replaceChildren(pic));
+    pic.src = `data:${img.mimeType};base64,${img.data}`;
+  }
+  let watcher = null;
+  function watchThumbs() {
+    queue = [];
+    if (watcher) watcher.disconnect();
+    const want = items.filter((a) => a.has_preview);
+    if (!('IntersectionObserver' in window)) { queue = want; return pump(); }
+    const byId = new Map(want.map((a) => [a.id, a]));
+    watcher = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        watcher.unobserve(e.target);
+        const a = byId.get(e.target.dataset.id);
+        if (a) queue.push(a);
+      }
+      pump();
+    }, { root: $('scroll'), rootMargin: '200px' });
+    for (const a of want) {
+      const node = document.querySelector(`.card[data-id="${a.id}"]`);
+      if (node) watcher.observe(node);
+    }
+  }
+
+  // ---- audio: one file at a time, kept for the last few assets ----
+  const player = new Audio();
+  const clips = new Map();
+  let playing = null; // { id, button }
+  function resetButton() {
+    if (playing) playing.button.textContent = 'Play';
+    playing = null;
+  }
+  function stopAudio() { player.pause(); resetButton(); }
+  player.addEventListener('ended', resetButton);
+  player.addEventListener('error', () => {
+    if (playing) { playing.button.textContent = 'Cannot play'; playing.button.disabled = true; playing = null; }
+  });
+
+  async function togglePlay(a, button) {
+    if (playing && playing.id === a.id) return stopAudio();
+    stopAudio();
+    let src = clips.get(a.id);
+    if (!src) {
+      button.disabled = true;
+      button.textContent = 'Loading…';
+      try {
+        const r = await callTool('asset_media', { id: a.id, filename: a.audio_file });
+        const clip = r.content && r.content.find((x) => x && x.type === 'audio');
+        if (!clip || !AUDIO.test(clip.mimeType) || typeof clip.data !== 'string') throw new Error('no audio');
+        src = `data:${clip.mimeType};base64,${clip.data}`;
+        clips.set(a.id, src);
+        if (clips.size > 6) clips.delete(clips.keys().next().value);
+      } catch {
+        button.textContent = 'Cannot play';
+        return;
+      }
+      button.disabled = false;
+    }
+    playing = { id: a.id, button };
+    button.textContent = 'Stop';
+    player.src = src;
+    player.play().catch(() => { if (playing && playing.id === a.id) { button.textContent = 'Cannot play'; button.disabled = true; playing = null; } });
+  }
+
+  // ---- selection -> conversation (ids only: asset names are untrusted text) ----
+  let contextTimer = 0, sent = '';
+  function order() { return items.filter((a) => picked.has(a.id)).map((a) => a.id); }
+  function updatePicked(tell) {
+    const ids = order();
+    const key = ids.join(', ');
+    $('clear').disabled = !ids.length;
+    $('use').hidden = !caps.message;
+    $('use').disabled = !ids.length || key === sent;
+    $('use').textContent = ids.length && key === sent ? 'Sent' : 'Use selected';
+    if (!ids.length) $('picked').textContent = 'Tick the assets you want.';
+    else if (caps.message) $('picked').textContent = `${ids.length} selected`;
+    else $('picked').textContent = `Selected: ${key}. Tell the assistant to use them.`;
+    if (!tell || !caps.updateModelContext) return;
+    clearTimeout(contextTimer);
+    contextTimer = setTimeout(() => {
+      const text = ids.length ? `Assets currently ticked in the hoard gallery: ${key}` : 'No assets are ticked in the hoard gallery.';
+      request('ui/update-model-context', { content: [{ type: 'text', text }] }).catch(() => {});
+    }, 400);
+  }
+  $('clear').addEventListener('click', () => {
+    picked.clear();
+    for (const b of document.querySelectorAll('#grid input:checked')) b.checked = false;
+    updatePicked(true);
+  });
+  $('use').addEventListener('click', async () => {
+    const key = order().join(', ');
+    if (!key) return;
+    $('use').disabled = true;
+    try {
+      const r = await request('ui/message', { role: 'user', content: [{ type: 'text', text: `I pick these hoard assets: ${key}` }] });
+      if (r.isError) throw new Error('rejected');
+      sent = key;
+      updatePicked(false);
+    } catch {
+      $('use').disabled = false;
+      $('picked').textContent = 'The selection could not be sent. Try again, or tell the assistant the ids: ' + key;
+    }
+  });
+
+  // ---- start ----
+  request('ui/initialize', {
+    appInfo: { name: 'hoard-gallery', version: '1' },
+    appCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] },
+    protocolVersion: PROTOCOL,
+  }).then((r) => {
+    caps = r.hostCapabilities || {};
+    applyContext(r.hostContext || {});
+    notify('ui/notifications/initialized');
+    if ('ResizeObserver' in window) {
+      let last = 0;
+      new ResizeObserver(() => {
+        const h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+        if (h !== last && !document.body.classList.contains('full')) notify('ui/notifications/size-changed', { height: (last = h) });
+      }).observe(document.documentElement);
+    }
+  }, () => setState('This client did not start the gallery.', true));
+})();
+</script>
+</body>
+</html>

@@ -113,6 +113,15 @@ Then just ask:
 > "Find a pixel-art sword in my hoard and add it to this game."
 > "Store the sprites in `out/` in hoard. Tag them, record the prompt I used, and add them to the Emberfall project."
 > "Which assets in my hoard have no license recorded?"
+> "Show me footstep sounds for a stone dungeon and let me pick."
+
+### Choosing assets in the conversation
+
+`show_assets` is an [MCP App](https://modelcontextprotocol.io/extensions/apps/overview): in a client that renders interactive views, the assets appear as a gallery in the conversation, with thumbnails and playback for audio files up to 2 MiB. Tick what you want and press **Use selected**; the agent receives the ids of your choice and carries on.
+
+The gallery loads nothing from the network. Previews reach it through the client, so it also works when only your own machine can reach hoard. Clients without interactive views get the same assets as a list with links to the web UI.
+
+This has only been tested against a simulated client so far, not in a real one.
 
 ### How agents move files
 
@@ -124,6 +133,7 @@ Metadata travels through tool calls. Binary files do not pass through the model:
 | `search_assets` | Full-text search with filters (type, tags, collection, project, license) and paging |
 | `get_asset` | Full record plus download commands |
 | `view_asset` | Look at the preview image, or read a text file such as a shader |
+| `show_assets` | Show assets to you as an interactive gallery to look, listen and pick (see above) |
 | `create_asset` | Create with metadata; returns upload commands (or takes small text files inline) |
 | `get_upload_commands` / `get_download_commands` | Signed `curl` commands for files, single or zipped |
 | `update_asset` / `bulk_update_assets` | Edit metadata, tags, collections and project usage |
@@ -132,6 +142,8 @@ Metadata travels through tool calls. Binary files do not pass through the model:
 | `list_collections` / `save_collection` / `delete_collection` | Packs, styles and other groups |
 | `list_projects` / `save_project` / `delete_project` | Projects that assets are used in |
 | `analyze_assets` | Run the built-in AI agent |
+
+`asset_media` also exists; the gallery uses it to play audio and it is of no use to an agent.
 
 The same token works for the REST API under `/api/v1`; see [`docs/api.md`](docs/api.md).
 
