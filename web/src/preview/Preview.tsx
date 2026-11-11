@@ -3,9 +3,11 @@ import { useEffect, useRef, useState } from 'react'
 import { fileDownloadUrl, rawUrl } from '../lib/api'
 import { stopPreview } from '../lib/audio'
 import { formatBytes, formatDuration } from '../lib/format'
+import { parseSprite } from '../lib/sprite'
 import { MAX_DECODE_SECONDS, computePeaks, decodeAudio, drawWaveform, loadFont } from '../lib/thumbs'
 import type { Asset, AssetFile } from '../lib/types'
 import { Spinner, typeColor } from '../ui'
+import { SpritePreview } from './SpritePreview'
 import type { Viewer } from './three'
 
 /** Shows the best available preview for one file of an asset. */
@@ -22,8 +24,14 @@ export function Preview({ asset, file }: { asset: Asset; file: AssetFile | undef
   }
   const url = rawUrl(asset.id, file.filename)
   switch (file.kind) {
-    case 'image':
-      return <ImagePreview key={url} url={url} file={file} />
+    case 'image': {
+      const sheet = parseSprite(asset.attrs, file)
+      return sheet ? (
+        <SpritePreview key={url} url={url} sheet={sheet} sheetView={<ImagePreview url={url} file={file} />} />
+      ) : (
+        <ImagePreview key={url} url={url} file={file} />
+      )
+    }
     case 'audio':
       return <AudioPlayer key={url} url={url} file={file} color={typeColor(asset.type)} />
     case 'video':

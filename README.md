@@ -8,7 +8,7 @@
 A self-hosted database for game assets: sprites, 3D models, textures, SFX, music, VFX, shaders, video, fonts and whatever else a game needs. One small container, one data directory, a web UI for people and an MCP server for Claude.
 
 - **AI first.** Every feature is available to Claude Code and Claude Desktop over MCP with an API token: search, download into a project, store newly generated assets with their prompts, tag, group, track usage.
-- **For humans too.** A fast web UI for desktop and phone with previews for every media kind, search, sorting, bulk actions and downloads.
+- **For humans too.** A fast web UI for desktop and phone with previews for every media kind (sprite sheets play as animations once their frame size is set under *Edit → Animation*), search, sorting, bulk actions and downloads.
 - **Your data, readable.** Original files are stored untouched next to a JSON sidecar per asset. No lock-in, trivial backups.
 - **Built-in AI agent** that names, describes and tags assets, using the Claude API or a local model in LM Studio.
 

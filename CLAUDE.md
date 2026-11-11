@@ -17,7 +17,7 @@ Self-hosted game-asset database: Go server (SQLite, REST, MCP) with an embedded 
 - `internal/server`: HTTP routing, sessions, file delivery. `server.go` holds middleware and auth, `assets.go` the handlers.
 - `internal/mcpserver`: `mcpserver.go` holds the tools; tool descriptions are the product for agents, so keep them accurate when behaviour changes. `gallery.go` and `gallery.html` are the interactive gallery behind `show_assets` (an MCP App): one hand-written HTML file without a build step, embedded into the binary and speaking JSON-RPC over `postMessage` with the client.
 - `internal/ai`: the metadata agent. `providers.go` talks to the Claude API (official Go SDK) and OpenAI-compatible servers (LM Studio).
-- `web/src`: `ui/` is the design system (use these primitives, do not restyle ad hoc), `views/` the pages, `preview/` and `lib/thumbs.ts` the media previews. The bundle is emitted to `dist/static`, because `/assets/<id>` is a page of the app.
+- `web/src`: `ui/` is the design system (use these primitives, do not restyle ad hoc), `views/` the pages, `preview/` and `lib/thumbs.ts` the media previews (`preview/SpritePreview.tsx` plays sprite sheets from the `frame_width`/`frame_height`/`frames`/`columns`/`fps`/`loop`/`animations` attributes, parsed by `lib/sprite.ts`). The bundle is emitted to `dist/static`, because `/assets/<id>` is a page of the app.
 - `scripts/`: `next-version.sh` (version from Conventional Commits) with its tests, `build-release.sh`, `third-party-notices.sh`.
 
 ## Release flow

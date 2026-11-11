@@ -1293,3 +1293,51 @@ img.pixel {
     display: none;
   }
 }
+
+/* ---------- animated sprite-sheet preview (quality lane) ---------- */
+.sprite-stage {
+  padding: var(--sp-5);
+}
+.sprite-canvas {
+  display: block;
+  height: auto;
+}
+.sprite-canvas.pixel {
+  image-rendering: pixelated;
+}
+.sprite-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+.sprite-controls .play {
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+}
+.sprite-controls .play svg {
+  fill: currentColor;
+}
+.sprite-scrub {
+  flex: 1 1 140px;
+  min-width: 100px;
+  accent-color: var(--accent);
+}
+.sprite-count {
+  min-width: 4ch;
+  text-align: right;
+}
+.sprite-anim {
+  width: auto;
+  min-width: 110px;
+}
+.sprite-fps {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.sprite-fps .input {
+  width: 68px;
+}
