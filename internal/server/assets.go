@@ -97,6 +97,7 @@ func parseListQuery(r *http.Request) hoard.ListQuery {
 		Project:    q.Get("project"),
 		License:    q.Get("license"),
 		Statuses:   multi(r, "status"),
+		Colors:     multi(r, "color"),
 		Untagged:   q.Get("untagged") == "1" || q.Get("untagged") == "true",
 		Trashed:    q.Get("trashed") == "1" || q.Get("trashed") == "true",
 		IDs:        multi(r, "ids"),
@@ -138,6 +139,7 @@ func (s *Server) handleGetAsset(w http.ResponseWriter, r *http.Request) error {
 type uploadResult struct {
 	Asset      *hoard.Asset `json:"asset"`
 	Duplicates []string     `json:"duplicate_of,omitempty"`
+	SimilarTo  []string     `json:"similar_to,omitempty"` // near-identical pictures (perceptual hash)
 }
 
 // handleCreateAsset accepts either a JSON body (metadata only) or
@@ -165,7 +167,7 @@ func (s *Server) handleCreateAsset(w http.ResponseWriter, r *http.Request) error
 	}
 	var in hoard.AssetInput
 	var assetID string
-	var dups []string
+	var dups, similar []string
 	fail := func(err error) error {
 		if assetID != "" { // do not leave a half-uploaded asset behind, even if the client is gone
 			_, _ = s.svc.Bulk(context.WithoutCancel(ctx), hoard.BulkOp{IDs: []string{assetID}, Action: "purge"})
@@ -201,6 +203,7 @@ func (s *Server) handleCreateAsset(w http.ResponseWriter, r *http.Request) error
 				return fail(err)
 			}
 			dups = append(dups, res.DuplicateOf...)
+			similar = append(similar, res.SimilarTo...)
 		}
 	}
 	if assetID == "" {
@@ -211,7 +214,7 @@ func (s *Server) handleCreateAsset(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	s.agent.AutoEnqueue(ctx, assetID)
-	writeJSON(w, http.StatusCreated, uploadResult{Asset: a, Duplicates: dups})
+	writeJSON(w, http.StatusCreated, uploadResult{Asset: a, Duplicates: dups, SimilarTo: similar})
 	return nil
 }
 
@@ -223,7 +226,7 @@ func (s *Server) handleAddFiles(w http.ResponseWriter, r *http.Request) error {
 		return &apiError{http.StatusBadRequest, "invalid", "expected multipart/form-data with file parts"}
 	}
 	n := 0
-	var dups []string
+	var dups, similar []string
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
@@ -240,6 +243,7 @@ func (s *Server) handleAddFiles(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		dups = append(dups, res.DuplicateOf...)
+		similar = append(similar, res.SimilarTo...)
 		n++
 	}
 	if n == 0 {
@@ -249,7 +253,7 @@ func (s *Server) handleAddFiles(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, uploadResult{Asset: a, Duplicates: dups})
+	writeJSON(w, http.StatusOK, uploadResult{Asset: a, Duplicates: dups, SimilarTo: similar})
 	return nil
 }
 

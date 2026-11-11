@@ -53,11 +53,15 @@ Covered by tests or checked in a real deployment: the web UI, MCP from a real cl
 
 Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Do not describe these as working.
 
+Also not exercised beyond tests: the audio decoders on real-world files (MP3 only with synthetic silent frames, Ogg Vorbis with one sample from the decoder's test data, FLAC with the encoder's own output, WAV with generated files), the font specimen with fonts other than Go Regular, and the library screens (similar assets drawer, duplicates dialog, colour swatches, pack import in the upload dialog), which are type-checked and built but were not driven in a browser.
+
 ## Known gaps
 
 - No password reset. An account is only created through first-run setup, `HOARD_ADMIN_*` (when no user exists) or another signed-in user. Until the first account exists, anyone who can reach the port can create it.
 - Tag rename/merge exists in the core, REST and MCP but has no screen in the web UI.
-- Thumbnails for audio, video, fonts, 3D models and image formats the server cannot decode are rendered by the browser (`web/src/lib/thumbs.ts`). Assets added only over MCP have none until the library is opened once, and the AI agent has no image for them before that.
+- The server renders thumbnails for decodable images, a waveform for WAV, MP3, Ogg Vorbis and FLAC and a specimen for TTF/OTF (`internal/hoard/audio.go`, `fontprev.go`), and only when the asset has none. Thumbnails for video, 3D models, WOFF/WOFF2 and Opus/other audio, and for image formats the server cannot decode (SVG, AVIF), are rendered by the browser (`web/src/lib/thumbs.ts`): assets of those kinds added only over MCP have none until the library is opened once, and the AI agent has no image for them before that.
+- Perceptual hashes and colours exist only for the primary file of an asset when it is a decodable image. `FindDuplicates` compares all hashes in memory (bucketed, fine for tens of thousands of pictures); `FindSimilar` scans them linearly. Pack licence detection is keyword matching and can be wrong: the import summary tells the caller what was applied.
+- The startup backfill (`RunBackfill`) retries audio and font files whose preview failed at every start (it only reads a header); images that cannot be decoded are marked and skipped.
 - Links handed to agents are built from the request's `Host` (`Server.BaseURL`), which is not validated. A proxy that rewrites `Host` produces wrong links; `HOARD_PUBLIC_URL` overrides it globally.
 - Sign-in throttling keys on the peer address, so all clients behind one reverse proxy share a bucket. There is no trusted-proxy setting.
 - Revoking an API token does not revoke signed links it was already given (two hours at most). The link-signing key cannot be rotated without editing the database.

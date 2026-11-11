@@ -188,6 +188,8 @@ export interface Filters {
   license: string
   /** Review statuses, any of; 'none' = not reviewed. */
   statuses: string[]
+  /** Hex colours without the hash sign; each must be a dominant colour of the picture. */
+  colors: string[]
   untagged: boolean
   trashed: boolean
   sort: string

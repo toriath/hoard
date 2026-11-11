@@ -1,6 +1,8 @@
 import { CircleAlert, CircleCheck, FilePlus2, Upload as UploadIcon, X } from 'lucide-react'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api, uploadAsset } from '../lib/api'
+import { importZip } from '../lib/api-library'
+import type { ImportMode } from '../lib/types-library'
 import { formatBytes, plural } from '../lib/format'
 import { changed, getMeta, toast, useQuery } from '../lib/store'
 import { useConfirm } from '../ui'
@@ -114,6 +116,10 @@ interface Item {
   progress: number
   error?: string
   duplicate?: boolean
+  similar?: boolean
+  /** Result of a pack import. */
+  summary?: string
+  notes?: string[]
 }
 
 function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: File[]; externalFiles: File[]; defaults: Defaults; onClose: () => void }) {
@@ -131,6 +137,10 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
   const [collection, setCollection] = useState(defaults.collection ?? '')
   const [project, setProject] = useState(defaults.project ?? '')
   const [items, setItems] = useState<Item[] | null>(null)
+  // A single zip archive can be imported as a pack instead of stored as one file.
+  const [zipChoice, setZipChoice] = useState<'import' | 'store'>('import')
+  const [importMode, setImportMode] = useState<ImportMode>('per_file')
+  const [packName, setPackName] = useState('')
   const [running, setRunning] = useState(false)
   const picker = useRef<HTMLInputElement>(null)
   const abort = useRef<(() => void) | null>(null)
@@ -147,10 +157,40 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
   }, [externalFiles])
   const confirm = useConfirm()
 
+  const isZip = files.length === 1 && /\.zip$/i.test(files[0].name)
+  const importing = isZip && zipChoice === 'import'
   const tooBig = files.filter((f) => f.size > meta.max_upload_bytes)
   const totalSize = files.reduce((n, f) => n + f.size, 0)
 
+  const startImport = async () => {
+    const file = files[0]
+    started.current = true
+    setItems([{ files, label: file.name, size: file.size, status: 'uploading', progress: 0 }])
+    setRunning(true)
+    const patch = (p: Partial<Item>) => setItems((cur) => cur && cur.map((it) => ({ ...it, ...p })))
+    const h = importZip(
+      file,
+      { mode: importMode, collection_name: packName || undefined, license: license || undefined, tags: tags.length ? tags : undefined, project_id: project || undefined },
+      (f) => patch({ progress: f }),
+    )
+    abort.current = h.abort
+    try {
+      const res = await h.promise
+      const notes: string[] = []
+      if (res.attribution) notes.push(`Attribution found: ${res.attribution}`)
+      if (res.license_source && res.license_source !== 'options') notes.push(`License ${res.license} read from ${res.license_source}`)
+      for (const f of res.failed ?? []) notes.push(`${f.name}: ${f.error}`)
+      patch({ status: 'done', progress: 1, summary: res.summary, notes })
+      changed('assets', 'groups')
+    } catch (e) {
+      patch({ status: 'error', error: e instanceof Error ? e.message : 'failed' })
+    }
+    abort.current = null
+    setRunning(false)
+  }
+
   const start = async () => {
+    if (importing) return startImport()
     const shared: AssetPatch = {}
     if (type) shared.type = type
     if (tags.length) shared.add_tags = tags
@@ -183,8 +223,8 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
       try {
         const res = await h.promise
         ok++
-        if (res.duplicate_of?.length) duplicates++
-        patch(i, { status: 'done', progress: 1, duplicate: !!res.duplicate_of?.length })
+        if (res.duplicate_of?.length || res.similar_to?.length) duplicates++
+        patch(i, { status: 'done', progress: 1, duplicate: !!res.duplicate_of?.length, similar: !res.duplicate_of?.length && !!res.similar_to?.length })
         void ensureThumb(res.asset)
       } catch (e) {
         patch(i, { status: 'error', error: e instanceof Error ? e.message : 'failed' })
@@ -231,7 +271,7 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
         <div className="stack">
           {failed > 0 && !running && <div className="note note-danger">{plural(failed, 'upload')} failed. The rest were added.</div>}
           {!running && failed === 0 && items.some((i) => i.duplicate) && (
-            <div className="note note-warn">Everything was added, but some files are identical to ones already in the library.</div>
+            <div className="note note-warn">Everything was added, but some files are identical or near-identical to ones already in the library.</div>
           )}
           <ul className="upload-list">
             {items.map((it, i) => (
@@ -249,6 +289,13 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
                 )}
                 {it.error && <div className="error">{it.error}</div>}
                 {it.duplicate && <div className="hint">Identical file already exists in the library</div>}
+                {it.similar && <div className="hint">A near-identical picture already exists in the library</div>}
+                {it.summary && <div className="hint">{it.summary}</div>}
+                {it.notes?.map((n, k) => (
+                  <div key={k} className="hint faint">
+                    {n}
+                  </div>
+                ))}
               </li>
             ))}
           </ul>
@@ -266,7 +313,7 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
         <>
           <Button onClick={close}>Cancel</Button>
           <Button variant="primary" icon={UploadIcon} disabled={files.length === 0 || tooBig.length > 0} onClick={start}>
-            Upload {files.length > 0 ? (mode === 'single' ? '1 asset' : plural(files.length, 'asset')) : ''}
+            {importing ? 'Import pack' : `Upload ${files.length > 0 ? (mode === 'single' ? '1 asset' : plural(files.length, 'asset')) : ''}`}
           </Button>
         </>
       }
@@ -301,6 +348,32 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
             </div>
             {tooBig.length > 0 && <div className="note note-danger">{plural(tooBig.length, 'file')} exceed the upload limit. Remove them to continue.</div>}
 
+            {isZip && (
+              <div className="seg-choice" role="radiogroup" aria-label="What to do with the zip archive">
+                <button role="radio" aria-checked={zipChoice === 'import'} onClick={() => setZipChoice('import')}>
+                  <b>Import as pack</b>
+                  <span>Unpack it into assets in a new collection; the licence is read from the pack’s files</span>
+                </button>
+                <button role="radio" aria-checked={zipChoice === 'store'} onClick={() => setZipChoice('store')}>
+                  <b>Store the zip as one file</b>
+                  <span>Keep the archive itself as a single asset</span>
+                </button>
+              </div>
+            )}
+            {importing && (
+              <>
+                <Field label="Assets from the pack">
+                  <select className="select" value={importMode} onChange={(e) => setImportMode(e.target.value as ImportMode)}>
+                    <option value="per_file">One asset per file</option>
+                    <option value="per_folder">One asset per top-level folder</option>
+                    <option value="single">One asset for the whole pack</option>
+                  </select>
+                </Field>
+                <Field label="Collection name" hint="Default: the name of the zip file">
+                  <input className="input" value={packName} onChange={(e) => setPackName(e.target.value)} placeholder={files[0].name.replace(/\.zip$/i, '')} />
+                </Field>
+              </>
+            )}
             {files.length > 1 && (
               <div className="seg-choice" role="radiogroup" aria-label="How to group the files">
                 <button role="radio" aria-checked={mode === 'separate'} onClick={() => setMode('separate')}>
@@ -325,12 +398,12 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
             )}
 
             <hr className="divider" style={{ margin: 0 }} />
-            <p className="eyebrow">Applies to {mode === 'single' ? 'the asset' : 'all uploaded assets'} — optional</p>
+            <p className="eyebrow">Applies to {importing ? 'all imported assets' : mode === 'single' ? 'the asset' : 'all uploaded assets'} — optional</p>
             <Field label="Tags">
               <TagInput value={tags} onChange={setTags} />
             </Field>
             <div className="field-row">
-              <Field label="Type">
+              {!importing && <Field label="Type">
                 <select className="select" value={type} onChange={(e) => setType(e.target.value)}>
                   <option value="">Detect automatically</option>
                   {meta.types.map((t) => (
@@ -339,13 +412,13 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
                     </option>
                   ))}
                 </select>
-              </Field>
-              <Field label="License">
-                <input className="input" list="license-list" value={license} onChange={(e) => setLicense(e.target.value)} placeholder="e.g. CC0-1.0" />
+              </Field>}
+              <Field label={importing ? 'License (overrides the one found in the pack)' : 'License'}>
+                <input className="input" list="license-list" value={license} onChange={(e) => setLicense(e.target.value)} placeholder={importing ? 'detected from the pack' : 'e.g. CC0-1.0'} />
               </Field>
             </div>
             <div className="field-row">
-              <Field label="Collection">
+              {!importing && <Field label="Collection">
                 <select className="select" value={collection} onChange={(e) => setCollection(e.target.value)}>
                   <option value="">None</option>
                   {(collections.data ?? []).map((c) => (
@@ -354,7 +427,7 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
                     </option>
                   ))}
                 </select>
-              </Field>
+              </Field>}
               <Field label="Used in project">
                 <select className="select" value={project} onChange={(e) => setProject(e.target.value)}>
                   <option value="">None</option>
@@ -366,12 +439,12 @@ function UploadDialog({ initial, externalFiles, defaults, onClose }: { initial: 
                 </select>
               </Field>
             </div>
-            <Field label="Source" hint="Generator, marketplace, artist…">
+            {!importing && <><Field label="Source" hint="Generator, marketplace, artist…">
               <input className="input" value={source} onChange={(e) => setSource(e.target.value)} placeholder="e.g. Midjourney v7, itch.io, self-made" />
             </Field>
             <Field label="Generation prompt">
               <textarea className="textarea" rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="The prompt these assets were generated with" />
-            </Field>
+            </Field></>}
             {meta.ai_enabled && <p className="hint faint">Leave name, description and tags to the AI agent: select assets afterwards and choose “AI tag”.</p>}
           </>
         )}

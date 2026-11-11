@@ -130,7 +130,7 @@ Metadata travels through tool calls. Binary files do not pass through the model:
 | Tool | Purpose |
 | --- | --- |
 | `hoard_overview` | Counts, valid types, license suggestions, collections, projects, top tags |
-| `search_assets` | Full-text search with filters (type, tags, collection, project, license) and paging |
+| `search_assets` | Full-text search with filters (type, tags, collection, project, license, dominant colours) and paging |
 | `get_asset` | Full record plus download commands |
 | `view_asset` | Look at the preview image, or read a text file such as a shader |
 | `show_assets` | Show assets to you as an interactive gallery to look, listen and pick (see above) |
@@ -142,10 +142,32 @@ Metadata travels through tool calls. Binary files do not pass through the model:
 | `list_collections` / `save_collection` / `delete_collection` | Packs, styles and other groups |
 | `list_projects` / `save_project` / `delete_project` | Projects that assets are used in |
 | `analyze_assets` | Run the built-in AI agent |
+| `find_similar` | Duplicates and look-alikes of one asset, with scored reasons ("identical file", "visually near-identical (distance 3)", "shares 4 tags") |
+| `find_duplicates` | Groups of identical files and near-identical pictures across the whole library |
+| `get_import_command` | A signed `curl -T pack.zip` command that imports a zip archive as a pack (see below) |
 
 `asset_media` also exists; the gallery uses it to play audio and it is of no use to an agent.
 
 The same token works for the REST API under `/api/v1`; see [`docs/api.md`](docs/api.md).
+
+### Duplicates, similar assets and colours
+
+For every picture the server computes a 64-bit perceptual hash (a difference hash of the decoded image, no second decode) and up to five dominant colours. Pictures stored before this existed are indexed in the background after the server starts.
+
+- **Upload warnings.** The result of an upload lists `duplicate_of` (identical bytes) and `similar_to` (near-identical pictures: the same image re-encoded, rescaled or lightly touched, at most 5 of 64 hash bits apart).
+- **Similar assets.** The asset drawer lists look-alikes with the reason for each; `find_similar` and `GET /assets/{id}/similar` return the same. Non-pictures are matched by identical files and by the same type with overlapping tags.
+- **Duplicates view.** *Find duplicates…* in the Library's view menu (or `find_duplicates`, `GET /duplicates`) lists groups of identical files and of near-identical pictures, where you can open them and move surplus ones to the trash.
+- **Colour search.** The Library's filter dialog has colour swatches; `search_assets` takes `colors` and the REST list takes `color=ff3c3c`. A colour is matched to the nearest of 53 palette colours (12 hues in four variants plus greys) and an asset matches when that colour makes up at least 10 % of its opaque pixels. Several colours must all be present.
+
+The hash and colours describe the primary file of an asset when it is an image the server can decode (PNG, JPEG, GIF, WebP, BMP, TIFF). SVG and AVIF pictures have neither.
+
+### Importing a pack
+
+Drop a single `.zip` on the web UI and choose **Import as pack**, or let an agent call `get_import_command` for a `curl -T pack.zip` command (`POST /import` does the same for scripts). hoard unpacks the archive on the server and creates a collection of kind pack, named after the zip or `collection_name`, with one of three layouts: `per_file` (one asset per file, the default), `per_folder` (one asset per top-level folder; files in sub-folders keep their path as `sub_folder_file.png`; root files stay separate) or `single`. Tags and a project can be given for all assets.
+
+The licence is read from `LICENSE*`, `COPYING*`, `README*`, `CREDITS*` and `.txt`/`.md` files in the archive root (CC0, CC-BY, CC-BY-SA, CC-BY-NC, OFL, MIT, Apache-2.0 and public domain, by their wording or by a creativecommons.org link), together with a line such as "Created by …" as attribution, and applied to every asset unless you pass a licence. Detection is by keywords, not legal advice: read the summary and correct it. The summary also lists skipped and failed files.
+
+The archive is treated as hostile: at most 10 000 entries, at most the upload limit unpacked, no entry that compresses more than 200:1 once it is larger than 4 MiB (a zip bomb), no symlinks, encrypted or empty entries; `__MACOSX`, dotfiles and folders are skipped; entry paths never reach the disk, only a sanitised file name does.
 
 ## The built-in AI agent
 
@@ -154,7 +176,7 @@ Configure it under **Settings → AI agent**. It looks at an asset's preview ima
 - **Claude API.** Paste an API key. The default model is `claude-opus-5-5`; `claude-haiku-5-5` is far cheaper and usually good enough for tagging.
 - **Local model.** Any OpenAI-compatible server. For LM Studio: Developer → Local Server → start, enable *Serve on Local Network*, and enter `http://<that-machine>:1234/v1`. Inside the container `localhost` is the container itself, so use the LAN or tailnet address. Choose a vision-capable model if previews should be analysed; text-only models still work from file names and metadata.
 
-Audio, video, fonts and 3D models get their preview (waveform, frame, specimen, render) from the browser the first time they appear in the web UI, and the agent then sees that image. Assets added purely over MCP have no such preview until someone opens the library once.
+Previews are made where they can be: the server renders thumbnails for images it can decode, a waveform for WAV, MP3, Ogg Vorbis and FLAC (the first ten minutes are decoded, and duration, sample rate, channels, bit depth and peak level are recorded as attributes when the asset does not have them yet) and a specimen ("Aa Bb Cc", digits, the font's name) for TrueType and OpenType fonts, all without ffmpeg. It only makes a thumbnail when the asset has none; a thumbnail from the browser or from you is never replaced. Video, 3D models, WOFF/WOFF2 fonts, Opus and other audio formats still get theirs from the browser the first time they appear in the web UI, and the agent then sees that image; assets of those kinds added purely over MCP have no preview until someone opens the library once.
 
 ## What an asset holds
 

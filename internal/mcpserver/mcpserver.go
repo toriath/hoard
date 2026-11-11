@@ -289,6 +289,7 @@ type searchIn struct {
 	ProjectID    string   `json:"project_id,omitempty" jsonschema:"only assets used in this project; pass 'none' for assets not used in any project"`
 	License      string   `json:"license,omitempty" jsonschema:"exact license; pass 'none' for assets without license information"`
 	Statuses     []string `json:"statuses,omitempty" jsonschema:"review status, any of: none, draft, approved, final, rework, rejected, placeholder, superseded"`
+	Colors       []string `json:"colors,omitempty" jsonschema:"hex colours like #d94c4c; assets whose picture has each of these as a dominant colour (matched to the nearest of 53 palette colours)"`
 	Untagged     bool     `json:"untagged,omitempty" jsonschema:"only assets without any tag"`
 	Trashed      bool     `json:"trashed,omitempty" jsonschema:"search the trash instead of the library"`
 	Sort         string   `json:"sort,omitempty" jsonschema:"relevance (default with a query), created (default otherwise), updated, name, size or type"`
@@ -299,7 +300,7 @@ type searchIn struct {
 
 func (t *tools) search(ctx context.Context, _ *mcp.CallToolRequest, in searchIn) (*mcp.CallToolResult, any, error) {
 	q := hoard.ListQuery{Q: in.Query, Types: in.Types, Tags: in.Tags, Collection: in.CollectionID, Project: in.ProjectID,
-		License: in.License, Statuses: in.Statuses, Untagged: in.Untagged, Trashed: in.Trashed, Sort: in.Sort, Limit: in.Limit, Offset: in.Offset}
+		License: in.License, Statuses: in.Statuses, Colors: in.Colors, Untagged: in.Untagged, Trashed: in.Trashed, Sort: in.Sort, Limit: in.Limit, Offset: in.Offset}
 	if q.Limit <= 0 {
 		q.Limit = 25
 	}

@@ -61,6 +61,7 @@ export function filtersToQuery(f: Partial<Filters>, extra: Record<string, string
   if (f.project) p.set('project', f.project)
   if (f.license) p.set('license', f.license)
   if (f.statuses?.length) p.set('status', f.statuses.join(','))
+  if (f.colors?.length) p.set('color', f.colors.join(','))
   if (f.untagged) p.set('untagged', '1')
   if (f.trashed) p.set('trashed', '1')
   if (f.sort) p.set('sort', f.sort)
@@ -135,7 +136,7 @@ export const zipUrl = (ids: string[]) => `/api/v1/download?ids=${ids.join(',')}`
 // ---- uploads (XHR for progress events) ----
 
 export interface UploadHandle {
-  promise: Promise<{ asset: Asset; duplicate_of?: string[] }>
+  promise: Promise<{ asset: Asset; duplicate_of?: string[]; similar_to?: string[] }>
   abort: () => void
 }
 
