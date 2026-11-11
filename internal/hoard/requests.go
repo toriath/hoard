@@ -74,6 +74,7 @@ type Submission struct {
 	AssetType    string `json:"asset_type,omitempty"`
 	AssetStatus  string `json:"asset_status,omitempty"`
 	PreviewKind  string `json:"preview_kind,omitempty"`
+	PrimaryFile  string `json:"primary_file,omitempty"` // file name of the main file, for previews
 	ThumbVersion int    `json:"thumb_version,omitempty"`
 	Trashed      bool   `json:"trashed,omitempty"`
 }
@@ -276,6 +277,7 @@ func (s *Service) loadSubmissions(ctx context.Context, reqs []*Request) error {
 			return err
 		}
 		if filename != "" {
+			sub.PrimaryFile = filename
 			sub.PreviewKind = PreviewKind(filename)
 		}
 		if sub.Verdict != "rejected" {

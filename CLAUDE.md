@@ -51,7 +51,7 @@ These came out of a security review. Do not weaken them without a reason written
 
 Covered by tests or checked in a real deployment: the web UI, MCP from a real client including uploads over signed links, the container on TrueNAS SCALE, access through a reverse proxy.
 
-Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Do not describe these as working.
+Never exercised against the real thing: the Claude API provider and LM Studio (both only against mock servers in `internal/ai/agent_test.go`), the Tailscale sidecar compose file, the `thv run` ToolHive command (flags taken from `thv run --help`, v0.53), the asset request queue with a real generator agent (Draw Things, audio-studio; the MCP loop is only tested with the SDK client), the `work-request-queue` and other MCP prompts in a real client, and the `show_assets` gallery in a real client (only against the Go SDK client in `internal/server/mcp_client_test.go` and a hand-written mock host in a browser; whether Claude Desktop, its Code tab or claude.ai render it is unknown). Do not describe these as working.
 
 ## Known gaps
 
@@ -67,6 +67,9 @@ Never exercised against the real thing: the Claude API provider and LM Studio (b
 - The `show_assets` gallery plays only audio files up to 2 MiB and shows thumbnails only; video, 3D and larger audio need the web UI. It is stateless: reopening a conversation starts with nothing ticked.
 - The waveform cannot be scrubbed from the keyboard. There is no frontend test suite.
 - The image job has registry write permission also on pull requests from branches of this repository (forks and Dependabot get a read-only token).
+
+- Asset requests: a claim expires lazily (when requests are read or claimed), there is no timer or activity entry for it. Accepting a submission marks the other waiting candidates "not chosen" but keeps their assets. A request whose lease runs out while an agent is still uploading can be claimed by another agent.
+- Placeholders cover sprite, ui, tileset, texture, vfx (PNG) and sfx, music, voice (WAV) only; the title is drawn with a 7x13 ASCII bitmap font (other characters show as `?`).
 
 ## Conventions
 

@@ -81,6 +81,22 @@
   --type-video: #fb7185;
   --type-font: #94a3b8;
   --type-other: #9ca3af;
+
+  /* ---- review status of assets and state of asset requests (both themes) ---- */
+  --status-draft: #94a3b8;
+  --status-approved: #3fb97a;
+  --status-final: #1f9d6a;
+  --status-rework: #f0a04b;
+  --status-rejected: #e5604f;
+  --status-placeholder: #a78bfa;
+  --status-superseded: #9ca3af;
+  --status-request-open: #6fb3ef;
+  --status-request-claimed: #e9b44c;
+  --status-request-submitted: #f0a04b;
+  --status-request-done: #3fb97a;
+  --status-request-cancelled: #9ca3af;
+  --status-request-high: #e9b44c;
+  --status-request-urgent: #e5604f;
 }
 
 /* ---- dark theme (default) ---- */

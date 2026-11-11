@@ -11,6 +11,7 @@ import { changed, emitAsset, getMeta, prefs, toast, toastError, typeLabel, useAs
 import { canRenderThumb, ensureThumb } from '../lib/thumbs'
 import type { Asset, AssetPatch, Filters } from '../lib/types'
 import { Button, Check as CheckBox, Chip, Dialog, Empty, Field, Menu, Spinner, TagInput, TypeBadge, cx, typeColor, typeIcon, useConfirm, useDebounced } from '../ui'
+import { CARD_STATUSES, STATUS_LABEL, StatusBadge } from '../ui/status'
 import { activeFilterCount, openAsset, readFilters, setFilters, type Scope } from './filters'
 import { useUpload } from './Upload'
 
@@ -147,6 +148,11 @@ const AssetCard = memo(function AssetCard({ asset, selected, selecting, playing,
         />
       </label>
       <PlayButton asset={asset} playing={playing} />
+      {CARD_STATUSES.includes(asset.status) && (
+        <span className="card-status">
+          <StatusBadge status={asset.status} />
+        </span>
+      )}
       {asset.ai_status === 'queued' || asset.ai_status === 'running' ? (
         <span className="card-flag" title="AI agent is analysing this asset">
           <Sparkles aria-hidden />
@@ -180,7 +186,9 @@ const AssetRow = memo(function AssetRow({ asset, selected, playing, onOpen, onTo
         <button type="button" className="name row-open truncate" onClick={(e) => { e.stopPropagation(); onOpen(asset, e) }}>
           {asset.name || 'Untitled'}
         </button>
-        <span className="row-tags truncate faint">{asset.tags.join(' · ')}</span>
+        <span className="row-tags truncate faint">
+          {CARD_STATUSES.includes(asset.status) && <StatusBadge status={asset.status} />} {asset.tags.join(' · ')}
+        </span>
       </span>
       <span className="col-type">
         <TypeBadge type={asset.type} />
@@ -428,6 +436,11 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
               #{t}
             </Chip>
           ))}
+          {filters.statuses.map((st) => (
+            <Chip key={st} active onRemove={() => setFilters(loc, { statuses: filters.statuses.filter((x) => x !== st) })}>
+              {st === 'none' ? 'Not reviewed' : STATUS_LABEL[st] ?? st}
+            </Chip>
+          ))}
           {filters.license && (
             <Chip active onRemove={() => setFilters(loc, { license: '' })}>
               {filters.license === 'none' ? 'No license' : filters.license}
@@ -572,6 +585,8 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
 
 // ---------- filter dialog ----------
 
+const STATUS_FILTERS: [string, string][] = [['none', 'Not reviewed'], ...Object.entries(STATUS_LABEL)]
+
 function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Scope; onClose: () => void }) {
   const loc = useLocation()
   const [q, setQ] = useState('')
@@ -586,7 +601,7 @@ function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Sc
       width={520}
       footer={
         <>
-          <Button variant="ghost" onClick={() => setFilters(loc, { tags: [], license: '', untagged: false, project: scope.project ? undefined : '' })}>
+          <Button variant="ghost" onClick={() => setFilters(loc, { tags: [], statuses: [], license: '', untagged: false, project: scope.project ? undefined : '' })}>
             Clear all
           </Button>
           <Button variant="primary" onClick={onClose}>
@@ -606,6 +621,19 @@ function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Sc
               </option>
             ))}
           </select>
+        </Field>
+        <Field label="Review status">
+          <div className="row-wrap">
+            {STATUS_FILTERS.map(([id, label]) => (
+              <Chip
+                key={id}
+                active={filters.statuses.includes(id)}
+                onClick={() => setFilters(loc, { statuses: filters.statuses.includes(id) ? filters.statuses.filter((x) => x !== id) : [...filters.statuses, id] })}
+              >
+                {label}
+              </Chip>
+            ))}
+          </div>
         </Field>
         <div className="row-wrap">
           <CheckBox checked={filters.untagged} onChange={(v) => setFilters(loc, { untagged: v })}>

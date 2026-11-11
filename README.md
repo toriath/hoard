@@ -18,6 +18,7 @@ A self-hosted database for game assets: sprites, 3D models, textures, SFX, music
 - [Install on TrueNAS SCALE](#install-on-truenas-scale)
 - [Reach it over your tailnet](#reach-it-over-your-tailnet)
 - [Connect Claude (MCP)](#connect-claude-mcp)
+- [Asset requests and review](#asset-requests-and-review)
 - [The built-in AI agent](#the-built-in-ai-agent)
 - [What an asset holds](#what-an-asset-holds)
 - [Where your data lives](#where-your-data-lives)
@@ -146,6 +147,50 @@ Metadata travels through tool calls. Binary files do not pass through the model:
 `asset_media` also exists; the gallery uses it to play audio and it is of no use to an agent.
 
 The same token works for the REST API under `/api/v1`; see [`docs/api.md`](docs/api.md).
+
+## Asset requests and review
+
+hoard can run a small work queue between the agents that build your game and the agents that make its assets. Nobody has to wait for anybody:
+
+1. A **coding agent** finds that the game needs a coin sprite or a door sound that hoard does not have, and files a **request** (`request_asset`). It can ask for a **placeholder** at the same time: a flat-colour PNG of the right size, or a quiet beep of the right length, which it drops into the game so everything runs meanwhile.
+2. A separate **generator agent**, for example a second Claude Code session connected to hoard and to your image tool (Draw Things) or audio tool (the audio-studio MCP), **claims** the next open request (`claim_request`). It gets everything it needs in one answer: the request, the project brief (art direction, palette, sizes, formats), for a rework the existing asset with its prompt, recipe and your feedback, and the exact next steps. It generates, stores the result with `create_asset` (prompt and generator recipe included), uploads the files and **submits** them (`submit_request`).
+3. **You review** in the web UI (**Requests**, column *Review*) or in a conversation. **Accept** makes the candidate the result: the asset is approved, the request is done, and the placeholder (or the asset that was being reworked) is marked superseded; its project usage, with notes, moves to the new asset. **Reject** with feedback sends the request back to the queue, and the next claim shows your feedback.
+4. You can also **steer any asset** at any time: *Approve*, *Needs rework* or *Reject* in the asset drawer, or `review_asset` over MCP. *Needs rework* stores your feedback as a note, sets the status to `rework` and puts a rework request into the queue, with the asset's type, size, prompt and recipe copied in, so a generator can redo it from the request alone.
+
+A claim is a lease (60 minutes by default, at most 24 hours). An agent that dies simply stops renewing it, and the request is open again.
+
+### Setting up a generator agent
+
+Give a second agent the hoard MCP server and the tools that make the assets. In Claude Code, the prompt `work-request-queue` is available as a slash command; its arguments say what you generate with and what types of request to take:
+
+```
+/mcp__hoard__work-request-queue tool="Draw Things" asset_types="sprite,ui,texture"
+```
+
+The agent then claims requests one by one until the queue is empty for it. Review stays with you: a generator agent never accepts its own work.
+
+The other prompts: `request-missing-assets` (for the coding agent: scan the game for missing assets, request them with specs from the project brief, place placeholders), `review-submissions` (walks you through the pending candidates with `show_assets`), `release-check` (project report, licences and credits, placeholders still in use; uses the project tools described elsewhere in this README) and `tidy-library`.
+
+### Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `request_asset` | File a request: title, description, type, spec (size, frames, duration, file name), priority, project; optionally with a placeholder |
+| `list_requests` / `get_request` | The queue, filtered; one request with candidates, feedback, project brief and the asset to rework |
+| `claim_request` | Take a request (by id, or the best open one matching `kind`, `asset_types`, `project_id`) and get the complete work item |
+| `renew_claim` / `release_request` | Extend the lease; give the request back |
+| `submit_request` | Hand in one or more created assets as candidates |
+| `cancel_request` | Withdraw a request |
+| `make_placeholder` | PNG or WAV stand-in for a request, with download commands |
+| `review_asset` | `approve`, `reject` or `rework` an asset (rework files a request) |
+| `review_submission` | `accept` or `reject` a candidate of a request |
+| `add_note` / `list_notes` / `resolve_note` | Comments and feedback on assets |
+
+Titles, descriptions, specs, notes and feedback are data written by people and agents. The tools return them in named fields and say so; agents are told to treat them as requirements, not as commands.
+
+Placeholders exist for `sprite`, `ui`, `tileset`, `texture` and `vfx` (a PNG, `width` × `height` from the spec, or the sheet size from `frame_width`, `frame_height`, `frames`, `columns`; default 64×64, at most 4096) and for `sfx`, `music` and `voice` (a 16-bit mono WAV of `duration_s`, default 1 s, at most 30 s). Other types have none. The placeholder is an ordinary asset with status `placeholder`, named `[placeholder] <title>`, and part of the request's project.
+
+Nothing here has been run against a real image or audio generator, nor have the prompts been tried in a real Claude Code session; the loop is tested end to end with the official MCP client.
 
 ## The built-in AI agent
 

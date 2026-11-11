@@ -91,6 +91,30 @@ Membership is changed through asset patches (`add_collections`, `add_projects`, 
 
 Managing accounts, tokens and the AI provider needs a browser session: `POST`/`DELETE /users`, `POST`/`DELETE /tokens`, `POST /auth/password` and every write under `/settings/ai` answer `403 session_required` to an API token. Everything else works with either.
 
+## Asset requests and review
+
+The request queue for generator agents, steering of assets and notes. Requests: `status` is `open` → `claimed` (a lease) → `submitted` → `done` (or `cancelled`); `kind` is `new` or `rework`. Everything that changes state is `POST` or `PATCH`; all endpoints accept a session or an API token.
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /requests?status=&project=&kind=&type=&mine=&target=&sort=&limit=` | List; `status` and `type` take comma-separated values, `project` may be `none`, `mine=1` only requests the caller holds, `sort=recent` newest change first. Returns `{ "items": […] }` with submissions |
+| `POST /requests` | Create: `title`, `description`, `asset_type`, `project_id`, `spec` (object, at most 16 KiB), `priority` (integer, higher first), `placeholder` (also generate one) |
+| `GET /requests/{id}` | One request with `submissions` (each with `verdict`, reviewer `feedback`) and, for rework, the open `notes` of the target asset |
+| `PATCH /requests/{id}` | Change `title`, `description`, `asset_type`, `spec`, `priority`, `project_id` of an unfinished request |
+| `POST /requests/{id}/cancel` | Withdraw |
+| `POST /requests/{id}/claim` | `{ "lease_minutes": 60 }` (max 1440); `409 conflict` if someone else holds it or it is not open. Atomic: of two simultaneous claims exactly one succeeds |
+| `POST /requests/{id}/renew` | Extend your lease |
+| `POST /requests/{id}/release` | Give it back (the claimer, or any browser session) |
+| `POST /requests/{id}/submit` | `{ "asset_ids": […], "note": "" }`: 1 to 20 existing, non-trashed assets |
+| `POST /requests/{id}/placeholder` | Generate (or return) the placeholder asset |
+| `POST /requests/{id}/submissions/{asset}/accept` | `{ "supersede": true }` (default): approve the candidate, finish the request, supersede the replaced asset and move its project usage |
+| `POST /requests/{id}/submissions/{asset}/reject` | `{ "feedback": "…" }` (required): rework note on the candidate, request back to open |
+| `GET /assets/{id}/review` | Status, notes (including resolved) and the requests the asset takes part in |
+| `POST /assets/{id}/review` | `{ "verdict": "approve" \| "reject" \| "rework", "feedback": "", "priority": 0, "project_id": "" }`; feedback is required for reject and rework. Rework creates or updates the asset's rework request and returns it |
+| `GET /assets/{id}/notes?open=1` | Notes oldest first; `open=1` leaves resolved ones out |
+| `POST /assets/{id}/notes` | `{ "body": "…", "kind": "comment" }` (`comment`, `rework`, `approval`, `rejection`; body at most 8 KiB) |
+| `POST /notes/{id}/resolve` | Mark a note as dealt with |
+
 ## Signed links
 
 MCP tools hand out links that need no token and expire after two hours:
