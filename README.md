@@ -3,7 +3,7 @@
 [![CI](https://github.com/toriath/hoard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/toriath/hoard/actions/workflows/ci.yml)
 [![Security](https://github.com/toriath/hoard/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/toriath/hoard/actions/workflows/security.yml)
 [![Release](https://img.shields.io/github/v/release/toriath/hoard)](https://github.com/toriath/hoard/releases)
-[![License: MIT](https://img.shields.io/github/license/toriath/hoard)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A self-hosted database for game assets: sprites, 3D models, textures, SFX, music, VFX, shaders, video, fonts and whatever else a game needs. One small container, one data directory, a web UI for people and an MCP server for Claude.
 
