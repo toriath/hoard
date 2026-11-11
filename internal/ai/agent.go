@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -123,6 +125,28 @@ func (a *Agent) envKeyApplies(s Settings) bool {
 	return s.Provider == provider && s.BaseURL == effectiveBaseURL(provider, a.cfg.AIBaseURL)
 }
 
+// CheckBaseURL validates the address of a model server. The server makes
+// requests to it, so it is restricted to plain http(s) URLs without embedded
+// credentials, and link-local addresses are refused: nothing a model server
+// would live at, but where cloud metadata services do. Private LAN addresses
+// must stay allowed, since that is where a local model runs.
+func CheckBaseURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return &hoard.InvalidError{Msg: "base_url must be an http(s) URL"}
+	}
+	if u.User != nil {
+		return &hoard.InvalidError{Msg: "base_url must not contain credentials"}
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
+		return &hoard.InvalidError{Msg: "base_url must not be a link-local address"}
+	}
+	return nil
+}
+
 // SaveSettings validates and stores settings. An empty APIKey keeps the
 // previously stored key, but only while provider and base URL stay the same:
 // a key must never follow a changed endpoint, or anyone able to edit the
@@ -132,8 +156,8 @@ func (a *Agent) SaveSettings(ctx context.Context, in Settings) error {
 		return &hoard.InvalidError{Msg: `provider must be "", "anthropic" or "openai"`}
 	}
 	in.BaseURL = strings.TrimRight(strings.TrimSpace(in.BaseURL), "/")
-	if in.BaseURL != "" && !strings.HasPrefix(in.BaseURL, "http://") && !strings.HasPrefix(in.BaseURL, "https://") {
-		return &hoard.InvalidError{Msg: "base_url must be an http(s) URL"}
+	if err := CheckBaseURL(in.BaseURL); err != nil {
+		return err
 	}
 	if len(in.Instructions) > 4000 {
 		return &hoard.InvalidError{Msg: "instructions are too long (max 4000 characters)"}

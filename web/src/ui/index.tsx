@@ -118,6 +118,10 @@ export function Dialog({
   useEffect(() => {
     const el = ref.current
     const onKey = (e: KeyboardEvent) => {
+      // With a dialog on top of another (a confirmation over the upload
+      // dialog), only the top one reacts.
+      const overlays = document.querySelectorAll('.overlay')
+      if (el?.parentElement !== overlays[overlays.length - 1]) return
       if (e.key === 'Escape') {
         // An open menu or tag suggestion list closes first.
         if (document.querySelector('.menu') || (e.target instanceof Element && e.target.closest('[data-suggesting="true"]'))) return

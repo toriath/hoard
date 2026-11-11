@@ -154,7 +154,7 @@ if [ -n "$notes_file" ] && [ -n "$version" ]; then
     fi
     section() { # title, lines
       [ -z "$2" ] && return 0
-      printf '## %s\n\n%s\n' "$1" "$2"
+      printf '## %s\n\n%s\n' "$1" "${2%$'\n'}"
     }
     section "Breaking changes" "$breaking"
     section "Features" "$features"

@@ -406,7 +406,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) error {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.svc.Logout(r.Context(), c.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		Secure: scheme(r) == "https"})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	return nil
 }
@@ -428,7 +429,12 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) error {
 	if !s.logins.take(key) {
 		return &apiError{http.StatusTooManyRequests, "rate_limited", "too many attempts, try again in a few minutes"}
 	}
-	if err := s.svc.ChangePassword(r.Context(), userFrom(r.Context()).ID, in.Current, in.New, keep); err != nil {
+	err := s.svc.ChangePassword(r.Context(), userFrom(r.Context()).ID, in.Current, in.New, keep)
+	if errors.Is(err, hoard.ErrBadCredentials) {
+		return &apiError{http.StatusBadRequest, "invalid", "current password is incorrect"}
+	}
+	if err != nil {
+		s.logins.refund(key) // only wrong guesses count, not a rejected new password
 		return err
 	}
 	s.logins.reset(key)

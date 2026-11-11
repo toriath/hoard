@@ -214,3 +214,16 @@ func TestEnvKeyScope(t *testing.T) {
 		t.Error("key followed a changed base URL")
 	}
 }
+
+func TestCheckBaseURL(t *testing.T) {
+	for _, ok := range []string{"", "http://192.168.1.50:1234/v1", "https://api.anthropic.com", "http://localhost:1234/v1", "http://lmstudio.lan/v1", "http://[fd00::1]:1234/v1"} {
+		if err := CheckBaseURL(ok); err != nil {
+			t.Errorf("CheckBaseURL(%q) = %v, want ok", ok, err)
+		}
+	}
+	for _, bad := range []string{"ftp://host/x", "file:///etc/passwd", "http://", "//host/v1", "http://user:pw@host/v1", "http://169.254.169.254/latest", "http://[fe80::1]/v1", "http://0.0.0.0:1234"} {
+		if err := CheckBaseURL(bad); err == nil {
+			t.Errorf("CheckBaseURL(%q) accepted", bad)
+		}
+	}
+}

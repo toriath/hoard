@@ -502,3 +502,18 @@ func TestLoginThrottleUnderConcurrency(t *testing.T) {
 		t.Errorf("healthz discloses the version: %s", b)
 	}
 }
+
+// Only wrong guesses of the current password count against the throttle.
+func TestPasswordChangeThrottle(t *testing.T) {
+	e := newEnv(t)
+	for range 12 { // a too-short new password, many times: never throttled
+		e.do("POST", "/api/v1/auth/password", `{"current":"correct horse battery","new":"short"}`, nil, http.StatusBadRequest, nil)
+	}
+	for i := range 9 {
+		want := http.StatusBadRequest
+		if i == 8 {
+			want = http.StatusTooManyRequests
+		}
+		e.do("POST", "/api/v1/auth/password", `{"current":"a wrong guess","new":"another long password"}`, nil, want, nil)
+	}
+}

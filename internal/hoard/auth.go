@@ -209,7 +209,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID, current, next, kee
 		return fmt.Errorf("user: %w", ErrNotFound)
 	}
 	if !verifyPassword(hash, current) {
-		return invalid("current password is incorrect")
+		return fmt.Errorf("current password: %w", ErrBadCredentials)
 	}
 	if err := checkPassword(next); err != nil {
 		return err
