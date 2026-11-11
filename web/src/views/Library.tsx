@@ -1,6 +1,6 @@
 import {
   ArrowDownUp, Check, Download, FolderOpen, Gamepad2, LayoutGrid, List, Pause, Pencil, Play, RotateCcw, Search, SlidersHorizontal,
-  Sparkles, Trash2, Upload, X,
+  Grid2x2, Sparkles, Trash2, Upload, X,
 } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api, filtersToQuery, rawUrl, thumbUrl, zipUrl } from '../lib/api'
@@ -11,6 +11,7 @@ import { changed, emitAsset, getMeta, prefs, toast, toastError, typeLabel, useAs
 import { canRenderThumb, ensureThumb } from '../lib/thumbs'
 import type { Asset, AssetPatch, Filters } from '../lib/types'
 import { Button, Check as CheckBox, Chip, Dialog, Empty, Field, Menu, Spinner, TagInput, TypeBadge, cx, typeColor, typeIcon, useConfirm, useDebounced } from '../ui'
+import { AtlasDialog } from './AtlasDialog'
 import { activeFilterCount, openAsset, readFilters, setFilters, type Scope } from './filters'
 import { useUpload } from './Upload'
 
@@ -221,6 +222,7 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [filterOpen, setFilterOpen] = useState(false)
   const [bulkEdit, setBulkEdit] = useState(false)
+  const [atlasOpen, setAtlasOpen] = useState(false)
   const anchor = useRef<string | null>(null)
 
   // Search box: local state, debounced into the URL.
@@ -546,6 +548,9 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
                 <Download aria-hidden />
                 <span className="hide-sm">Download</span>
               </a>
+              <Button size="sm" icon={Grid2x2} aria-label="Pack atlas" title="Pack the selected images into a texture atlas" onClick={() => setAtlasOpen(true)}>
+                <span className="hide-sm">Atlas</span>
+              </Button>
               <Button size="sm" variant="danger" icon={Trash2} aria-label="Move to trash" onClick={() => bulk('trash', {}, 'Moved %n to trash')}>
                 <span className="hide-sm">Trash</span>
               </Button>
@@ -556,6 +561,7 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
       )}
 
       {filterOpen && <FilterDialog filters={filters} scope={scope} onClose={() => setFilterOpen(false)} />}
+      {atlasOpen && <AtlasDialog ids={ids} onClose={() => setAtlasOpen(false)} />}
       {bulkEdit && (
         <BulkEditDialog
           count={selected.size}

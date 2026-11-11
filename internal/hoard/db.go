@@ -96,6 +96,7 @@ func Open(dataDir string, log *slog.Logger) (*Service, error) {
 		return nil, err
 	}
 	s.protectDB()
+	s.SweepDerived(context.Background())
 	return s, nil
 }
 

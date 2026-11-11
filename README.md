@@ -18,6 +18,7 @@ A self-hosted database for game assets: sprites, 3D models, textures, SFX, music
 - [Install on TrueNAS SCALE](#install-on-truenas-scale)
 - [Reach it over your tailnet](#reach-it-over-your-tailnet)
 - [Connect Claude (MCP)](#connect-claude-mcp)
+- [Keeping a game repository in sync](#keeping-a-game-repository-in-sync)
 - [The built-in AI agent](#the-built-in-ai-agent)
 - [What an asset holds](#what-an-asset-holds)
 - [Where your data lives](#where-your-data-lives)
@@ -142,10 +143,32 @@ Metadata travels through tool calls. Binary files do not pass through the model:
 | `list_collections` / `save_collection` / `delete_collection` | Packs, styles and other groups |
 | `list_projects` / `save_project` / `delete_project` | Projects that assets are used in |
 | `analyze_assets` | Run the built-in AI agent |
+| `get_repo_audit_command` | One shell command that uploads a hash list of the game repository's asset files to hoard |
+| `audit_project` | Compare that list with the library: known, outdated, untracked, missing, not linked |
+| `sync_project` | Download commands for missing or changed files, placed by the project brief; lock file; removals |
+| `pack_atlas` | Pack the main images of several assets into one atlas (Godot, Phaser or generic JSON) |
+| `get_derivative_command` | A resized copy of an image (nearest or linear, PNG or JPEG), rendered on demand |
+| `get_engine_hints` | Import settings for Godot 4, Unity and Phaser; Godot `SpriteFrames` for sprite sheets |
 
 `asset_media` also exists; the gallery uses it to play audio and it is of no use to an agent.
 
 The same token works for the REST API under `/api/v1`; see [`docs/api.md`](docs/api.md).
+
+## Keeping a game repository in sync
+
+hoard never reads your game repository. An agent (or you) runs one command in it; the command sends a list of file names, sizes and SHA-256 hashes to hoard, and everything else is computed from that list. File contents never leave the repository this way.
+
+1. `get_repo_audit_command` (project, optional `root`) returns a POSIX shell command: it lists the asset-like files below the root (images, audio, models, fonts, video and other formats hoard knows; not code or text; `.git`, `node_modules`, `.godot`, `Library`, `Temp` and build folders are skipped), hashes them with `sha256sum` or `shasum -a 256`, and uploads the list through a signed link bound to the project. The link is valid for two hours. A new upload replaces the project's previous snapshot. In the web UI the project page has the same command under **Game repository**.
+2. `audit_project` compares the snapshot with the library. Files whose content matches an asset are *known* (flagged when the asset was superseded by a newer version, has status rework, rejected or placeholder, or is not linked to the project); the others are *untracked*, with a suggested type and name for `create_asset`. Project assets without any file in the repository are *missing*.
+3. `sync_project` decides where every file of the project's assets belongs and returns `curl` download commands only for what is missing or differs. Superseded assets are followed to their newest version. If the repository holds an older version of an asset, the new file is written to the same path (same extension required), whatever its file name; otherwise the path comes from the project brief: `folders[<asset type>]`, else `folders.default`, else `assets/<type>`, with the file name converted to the brief's `naming` (`snake_case`, `kebab-case`, `camelCase`, `PascalCase` or `keep`). A different file already sitting at a target path is reported as a `conflict` and not overwritten. Repository files of superseded assets that were *not* replaced in place are listed as `removals`: hoard never deletes anything. The result also carries a command for `hoard.lock.json` (project, and per file: path, asset, SHA-256, size, license, attribution), which is also available as **Lock file** on the project page.
+
+Run the audit again after a sync to confirm. Without a brief, files go to `assets/<type>/` under their original names.
+
+Other delivery tools:
+
+- `pack_atlas` packs the main images of up to 256 assets (PNG, JPEG, GIF, WebP, BMP, TIFF) with MaxRects into one PNG of at most 8192 px, with optional padding, edge extrusion and power-of-two size. Output is a zip: `atlas.png` plus `atlas.json` (generic frames, or the Phaser JSON-hash format) or, for Godot 4, one `AtlasTexture` `.tres` per sprite. The same dialog is available in the Library: select assets and press **Atlas**.
+- `get_derivative_command` renders a scaled copy of an image on demand (`width`/`height` or `scale`, up to 8192 px per edge) and caches it in `<data>/cache/derived/`. The filter defaults to nearest for pixel art (asset attribute `pixel_art`, a `pixel-art` tag, or a brief with `pixel_art`) and for integer scales of 2 or more. Output is PNG or JPEG; WebP is not supported. The link covers every parameter.
+- `get_engine_hints` recommends import settings per file for Godot 4, Unity or Phaser, from the asset and the brief (pixel art, tile size, loops). For sprite sheets with `frame_width` and `frame_height` attributes it generates a Godot `SpriteFrames` resource. These are recommendations from general engine knowledge and have not been checked in a running engine.
 
 ## The built-in AI agent
 

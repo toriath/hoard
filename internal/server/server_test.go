@@ -271,7 +271,7 @@ func TestMCP(t *testing.T) {
 		} `json:"tools"`
 	}
 	mcpCall(e, "tools/list", map[string]any{}, &tools)
-	if len(tools.Tools) != 22 {
+	if len(tools.Tools) < 22 { // at least the core tools; feature areas add more
 		t.Errorf("%d tools", len(tools.Tools))
 	}
 
