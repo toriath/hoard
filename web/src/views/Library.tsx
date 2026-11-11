@@ -335,6 +335,14 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
     }
   }
 
+  // While the index is rebuilt in the background, keep the list fresh.
+  const rebuilding = !!stats.data?.rebuilding
+  useEffect(() => {
+    if (!rebuilding) return
+    const t = setInterval(() => changed('assets'), 3000)
+    return () => clearInterval(t)
+  }, [rebuilding])
+
   const typeCounts = stats.data?.by_type ?? {}
   const typesShown = meta.types.filter((t) => typeCounts[t.id] || filters.types.includes(t.id))
   const nFilters = activeFilterCount(filters)
@@ -344,6 +352,11 @@ export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?:
   return (
     <div className="page library">
       {header}
+      {stats.data?.rebuilding && (
+        <p className="muted rebuild-note" role="status">
+          Rebuilding the library index from the files on disk. Assets appear as they are imported.
+        </p>
+      )}
       {beforeGrid}
       <div className="toolbar">
         <div className="search">

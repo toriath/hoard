@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
@@ -60,6 +61,7 @@ type Service struct {
 
 	rebuildCancel context.CancelFunc // set while a startup import of the sidecars runs
 	rebuildDone   chan struct{}
+	rebuilding    atomic.Bool
 }
 
 // Open opens (and if necessary creates) the library in dataDir.

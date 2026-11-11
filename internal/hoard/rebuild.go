@@ -19,10 +19,18 @@ import (
 // maxSidecarBytes bounds what the import reads from one asset.json.
 const maxSidecarBytes = 8 << 20
 
+// Limits applied to what a sidecar claims.
+const (
+	maxImportTags  = 200
+	maxImportFiles = 2000
+	rebuildSetting = "rebuild_in_progress"
+)
+
 var (
-	reFileID     = regexp.MustCompile(`^fil_[0-9a-z]{12}$`)
-	reCollection = regexp.MustCompile(`^col_[0-9a-z]{12}$`)
-	reProject    = regexp.MustCompile(`^prj_[0-9a-z]{12}$`)
+	// The alphabet of newID (Crockford base32 without i, l, o, u).
+	reFileID     = regexp.MustCompile(`^fil_[0-9a-hjkmnp-tv-z]{12}$`)
+	reCollection = regexp.MustCompile(`^col_[0-9a-hjkmnp-tv-z]{12}$`)
+	reProject    = regexp.MustCompile(`^prj_[0-9a-hjkmnp-tv-z]{12}$`)
 )
 
 // RebuildResult summarises an import of the asset sidecars.
@@ -37,20 +45,38 @@ type RebuildResult struct {
 // startRebuild imports the sidecars in the background when the index holds no
 // assets at all but the library directory has some.
 func (s *Service) startRebuild() {
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM assets`).Scan(&n); err != nil || n > 0 {
-		return
-	}
-	entries, err := os.ReadDir(filepath.Join(s.dataDir, "assets"))
-	if err != nil || len(entries) == 0 {
-		return
+	resume, _ := s.GetSetting(context.Background(), rebuildSetting)
+	if resume == "" {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM assets`).Scan(&n); err != nil || n > 0 {
+			return
+		}
+		entries, err := os.ReadDir(filepath.Join(s.dataDir, "assets"))
+		if err != nil || len(entries) == 0 {
+			return
+		}
+		// Remembered, so that a restart in the middle continues the import
+		// (which skips what is already there) instead of leaving the rest out.
+		if err := s.SetSetting(context.Background(), rebuildSetting, "1"); err != nil {
+			s.log.Warn("rebuild: cannot record progress", "err", err)
+			return
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.rebuildCancel = cancel
 	s.rebuildDone = make(chan struct{})
+	s.rebuilding.Store(true)
 	go func() {
 		defer close(s.rebuildDone)
+		defer s.rebuilding.Store(false)
 		res := s.RebuildFromSidecars(ctx)
+		if ctx.Err() != nil {
+			s.log.Info("index rebuild interrupted; it continues at the next start", "assets", res.Assets)
+			return
+		}
+		if err := s.SetSetting(context.Background(), rebuildSetting, ""); err != nil {
+			s.log.Warn("rebuild: cannot clear progress", "err", err)
+		}
 		s.log.Info("index rebuilt from asset sidecars",
 			"assets", res.Assets, "files", res.Files, "collections", res.Collections,
 			"projects", res.Projects, "skipped", res.Skipped)
@@ -110,7 +136,7 @@ func (s *Service) RebuildFromSidecars(ctx context.Context) RebuildResult {
 			return res
 		}
 		id := e.Name()
-		if !ValidAssetID(id) || !e.IsDir() { // IsDir is false for symlinks
+		if !ValidAssetID(id) || !isRealDir(filepath.Join(root, id)) {
 			s.log.Warn("rebuild: skipping entry", "name", e.Name())
 			res.Skipped++
 			continue
@@ -138,6 +164,12 @@ func (s *Service) RebuildFromSidecars(ctx context.Context) RebuildResult {
 		res.Projects += np
 	}
 	return res
+}
+
+// isRealDir is true for a directory that is not a symbolic link.
+func isRealDir(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.IsDir()
 }
 
 func readSidecar(dir, id string) (*sidecar, error) {
@@ -171,11 +203,24 @@ func readSidecar(dir, id string) (*sidecar, error) {
 	return &sc, nil
 }
 
+// validTime normalises a recorded time to UTC RFC 3339. Values that do not
+// parse or lie outside 2000-01-01 .. tomorrow become the current time, so a
+// forged ancient deleted_at cannot make the trash purge an asset at once.
 func validTime(v string) string {
-	if _, err := time.Parse(time.RFC3339, v); err != nil {
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil || t.Year() < 2000 || t.After(time.Now().Add(24*time.Hour)) {
 		return now()
 	}
-	return v
+	return t.UTC().Format(time.RFC3339)
+}
+
+// clip shortens v to at most max bytes without cutting a character.
+func clip(v string, max int) string {
+	v = strings.TrimSpace(strings.ToValidUTF8(v, ""))
+	if len(v) <= max {
+		return v
+	}
+	return strings.ToValidUTF8(v[:max], "")
 }
 
 // hashRegular hashes a regular file (never a symlink) and, for images, reads
@@ -215,6 +260,9 @@ func (s *Service) importSidecar(ctx context.Context, tx *sql.Tx, sc *sidecar) (n
 		return 0, 0, 0, nil // already in the index
 	}
 	dir := s.assetDir(sc.ID)
+	if !isRealDir(dir) {
+		return 0, 0, 0, os.ErrInvalid
+	}
 
 	typ := strings.ToLower(sc.Type)
 	if !ValidType(typ) {
@@ -224,17 +272,27 @@ func (s *Service) importSidecar(ctx context.Context, tx *sql.Tx, sc *sidecar) (n
 		sc.Status = ""
 	}
 	for _, v := range []*string{&sc.SupersededBy, &sc.DerivedFrom} {
-		if !ValidAssetID(*v) {
+		if !ValidAssetID(*v) || *v == sc.ID {
 			*v = ""
+		}
+	}
+	srcURL, licURL := clip(sc.SourceURL, 2000), clip(sc.LicenseURL, 2000)
+	for _, u := range []*string{&srcURL, &licURL} {
+		if *u != "" && !strings.HasPrefix(*u, "http://") && !strings.HasPrefix(*u, "https://") {
+			*u = ""
 		}
 	}
 	attrs := []byte("{}")
 	if sc.Attrs != nil {
-		attrs, _ = json.Marshal(sc.Attrs)
+		if b, e := json.Marshal(sc.Attrs); e == nil && len(b) <= 64<<10 {
+			attrs = b
+		}
 	}
 	gen := []byte("{}")
 	if len(sc.Generator) > 0 {
-		gen, _ = json.Marshal(sc.Generator)
+		if b, e := json.Marshal(sc.Generator); e == nil && len(b) <= 32<<10 {
+			gen = b
+		}
 	}
 	created := validTime(sc.CreatedAt)
 	updated := validTime(sc.UpdatedAt)
@@ -243,63 +301,89 @@ func (s *Service) importSidecar(ctx context.Context, tx *sql.Tx, sc *sidecar) (n
 		deleted = validTime(*sc.DeletedAt)
 	}
 	thumb := 0
-	if p, _ := s.ThumbPath(sc.ID); p != "" {
-		thumb = 1
+	for _, n := range []string{"thumb.png", "thumb.jpg"} {
+		if fi, e := os.Lstat(filepath.Join(dir, n)); e == nil && fi.Mode().IsRegular() {
+			thumb = 1
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO assets(id, type, type_auto, name, name_auto, description, prompt, source, source_url,
 		license, license_url, attribution, attrs, thumb_version, created_at, updated_at, deleted_at, status, superseded_by, derived_from, generator)
 		VALUES(?, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sc.ID, typ, strings.TrimSpace(sc.Name), sc.Description, sc.Prompt, sc.Source, sc.SourceURL,
-		sc.License, sc.LicenseURL, sc.Attribution, string(attrs), thumb, created, updated, deleted,
+		sc.ID, typ, clip(sc.Name, 300), clip(sc.Description, 20000), clip(sc.Prompt, 50000), clip(sc.Source, 500), srcURL,
+		clip(sc.License, 200), licURL, clip(sc.Attribution, 1000), string(attrs), thumb, created, updated, deleted,
 		sc.Status, sc.SupersededBy, sc.DerivedFrom, string(gen)); err != nil {
 		return
 	}
 
-	for _, t := range NormalizeTags(sc.Tags) {
+	tags := NormalizeTags(sc.Tags)
+	if len(tags) > maxImportTags {
+		tags = tags[:maxImportTags]
+	}
+	for _, t := range tags {
 		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO asset_tags(asset_id, tag) VALUES(?, ?)`, sc.ID, t); err != nil {
 			return
 		}
 	}
 
-	// Files: only those that exist on disk, with size and hash taken from disk.
+	// Files: only real files of a real files/ directory, with size and hash
+	// taken from disk. Nothing is followed through a symbolic link.
+	filesDir := filepath.Join(dir, "files")
+	idMap := map[string]string{} // id in the sidecar -> id in the index
 	seenNames := map[string]bool{}
-	var kept []string
-	for _, f := range sc.Files {
-		name := f.Filename
-		if name == "" || name != SanitizeFilename(name) || strings.ContainsAny(name, `/\`) ||
-			seenNames[strings.ToLower(name)] {
-			s.log.Warn("rebuild: skipping file", "asset", sc.ID, "file", name)
-			continue
-		}
-		size, sum, cfg, hasCfg, ferr := hashRegular(filepath.Join(dir, "files", name))
-		if ferr != nil || size == 0 {
-			s.log.Warn("rebuild: file missing or unreadable", "asset", sc.ID, "file", name)
-			continue
-		}
-		seenNames[strings.ToLower(name)] = true
-		fid := f.ID
-		if !reFileID.MatchString(fid) {
-			fid = newID("fil")
-		}
-		var w, h int
-		if hasCfg {
-			w, h = cfg.Width, cfg.Height
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO asset_files(id, asset_id, filename, mime, size, sha256, width, height, created_at)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, fid, sc.ID, name, MimeFor(name), size, sum, w, h, validTime(f.CreatedAt)); err != nil {
-			return
-		}
-		kept = append(kept, fid)
-		nFiles++
-	}
-	primary := sc.PrimaryFileID
-	if !slices.Contains(kept, primary) {
-		primary = ""
-		if len(kept) > 0 {
-			if err = tx.QueryRowContext(ctx, `SELECT id FROM asset_files WHERE asset_id = ? ORDER BY created_at, filename LIMIT 1`, sc.ID).Scan(&primary); err != nil {
-				return
+	var firstKept string
+	if isRealDir(filesDir) {
+		for i, f := range sc.Files {
+			if i >= maxImportFiles {
+				break
 			}
+			name := f.Filename
+			if name == "" || name != SanitizeFilename(name) || strings.ContainsAny(name, `/\`) || seenNames[strings.ToLower(name)] {
+				s.log.Warn("rebuild: skipping file", "asset", sc.ID, "file", name)
+				continue
+			}
+			size, sum, cfg, hasCfg, ferr := hashRegular(filepath.Join(filesDir, name))
+			if ferr != nil || size == 0 {
+				s.log.Warn("rebuild: file missing or not a regular file", "asset", sc.ID, "file", name)
+				continue
+			}
+			var w, h int
+			if hasCfg {
+				w, h = cfg.Width, cfg.Height
+			}
+			// A file id that another asset already uses gets a fresh one.
+			fid := f.ID
+			if !reFileID.MatchString(fid) {
+				fid = newID("fil")
+			}
+			inserted := false
+			for try := 0; try < 3 && !inserted; try++ {
+				var r sql.Result
+				if r, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO asset_files(id, asset_id, filename, mime, size, sha256, width, height, created_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, fid, sc.ID, name, MimeFor(name), size, sum, w, h, validTime(f.CreatedAt)); err != nil {
+					return
+				}
+				if n, _ := r.RowsAffected(); n > 0 {
+					inserted = true
+				} else {
+					fid = newID("fil")
+				}
+			}
+			if !inserted {
+				continue
+			}
+			seenNames[strings.ToLower(name)] = true
+			if f.ID != "" {
+				idMap[f.ID] = fid
+			}
+			if firstKept == "" {
+				firstKept = fid
+			}
+			nFiles++
 		}
+	}
+	primary := idMap[sc.PrimaryFileID]
+	if primary == "" {
+		primary = firstKept
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE assets SET primary_file_id = ? WHERE id = ?`, primary, sc.ID); err != nil {
 		return
@@ -317,8 +401,8 @@ func (s *Service) importSidecar(ctx context.Context, tx *sql.Tx, sc *sidecar) (n
 		if !reCollection.MatchString(c.ID) {
 			continue
 		}
-		name := strings.TrimSpace(c.Name)
-		if name == "" || len(name) > 200 {
+		name := clip(c.Name, 200)
+		if name == "" {
 			name = c.ID
 		}
 		kind := c.Kind
@@ -341,8 +425,8 @@ func (s *Service) importSidecar(ctx context.Context, tx *sql.Tx, sc *sidecar) (n
 		if !reProject.MatchString(p.ID) {
 			continue
 		}
-		name := strings.TrimSpace(p.Name)
-		if name == "" || len(name) > 200 {
+		name := clip(p.Name, 200)
+		if name == "" {
 			name = p.ID
 		}
 		var r sql.Result
@@ -354,7 +438,7 @@ func (s *Service) importSidecar(ctx context.Context, tx *sql.Tx, sc *sidecar) (n
 			nProjs++
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO project_assets(project_id, asset_id, note, added_at) VALUES(?, ?, ?, ?)`,
-			p.ID, sc.ID, p.Note, ts); err != nil {
+			p.ID, sc.ID, clip(p.Note, 1000), ts); err != nil {
 			return
 		}
 	}

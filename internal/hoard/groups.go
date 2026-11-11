@@ -416,11 +416,12 @@ type Stats struct {
 	Tags        int            `json:"tags"`
 	Collections int            `json:"collections"`
 	Projects    int            `json:"projects"`
+	Rebuilding  bool           `json:"rebuilding"` // the index is being rebuilt from the sidecars in the background
 }
 
 // GetStats computes library statistics.
 func (s *Service) GetStats(ctx context.Context) (*Stats, error) {
-	st := &Stats{ByType: map[string]int{}, Licenses: []TagCount{}}
+	st := &Stats{ByType: map[string]int{}, Licenses: []TagCount{}, Rebuilding: s.rebuilding.Load()}
 	err := s.db.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM assets WHERE deleted_at IS NULL),
 		(SELECT COALESCE(SUM(file_count), 0) FROM assets WHERE deleted_at IS NULL),
