@@ -790,6 +790,7 @@ func (s *Service) Bulk(ctx context.Context, op BulkOp) (int, error) {
 				if err := os.RemoveAll(s.assetDir(id)); err != nil {
 					s.log.Warn("remove asset dir", "asset", id, "err", err)
 				}
+				s.removeDerived(id)
 			}
 		} else {
 			s.syncSidecar(ctx, id)

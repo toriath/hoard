@@ -1102,4 +1102,96 @@ a.chip:hover {
 }
 .credits-md {
   max-height: 50vh;
+
+/* ---------- delivery: game repository panel and atlas dialog ---------- */
+.repo-panel {
+  margin-bottom: var(--sp-5);
+}
+.repo-title {
+  margin: 0;
+  font-size: var(--fs-md);
+}
+.repo-body {
+  display: grid;
+  gap: var(--sp-4);
+}
+.repo-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+.repo-stat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+.repo-stat b {
+  font-size: var(--fs-lg);
+}
+.repo-stat svg {
+  width: 14px;
+  height: 14px;
+  align-self: center;
+  color: var(--text-muted);
+}
+button.repo-stat {
+  cursor: pointer;
+}
+button.repo-stat:hover,
+.repo-stat-open {
+  border-color: var(--accent);
+}
+.repo-ok b {
+  color: var(--success);
+}
+.repo-warn b {
+  color: var(--warning);
+}
+.repo-cmd-row {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+}
+.repo-cmd-row .input {
+  flex: 1;
+  min-width: 0;
+}
+.repo-hint {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-sm);
+}
+.repo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow: auto;
+}
+.repo-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-1) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.atlas-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-3);
+}
+@media (max-width: 480px) {
+  .atlas-grid {
+    grid-template-columns: 1fr;
+  }
+  .repo-cmd-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }

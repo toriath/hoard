@@ -114,6 +114,26 @@ Entries older than 365 days are pruned by the daily maintenance.
 
 Managing accounts, tokens and the AI provider needs a browser session: `POST`/`DELETE /users`, `POST`/`DELETE /tokens`, `POST /auth/password` and every write under `/settings/ai` answer `403 session_required` to an API token. Everything else works with either.
 
+## Game repository delivery
+
+Paths below are relative to `/api/v1`. All need a session or API token except the signed links.
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /projects/{id}/repo/audit` | Audit of the stored repository snapshot: `counts`, `known`, `unknown`, `missing`, `unlinked` (lists cut at 500, `truncated`) |
+| `GET /projects/{id}/repo/audit-command?root=…&extensions=png,ogg` | `{ "command": "…" }`: the shell command that uploads a snapshot. It contains a signed link, so treat the response like a credential |
+| `GET /projects/{id}/repo/sync` | The sync plan as JSON: `entries` (path, reason `missing`/`changed`/`unchanged`/`conflict`, asset, hash), `removals`, `warnings` |
+| `GET /projects/{id}/repo/lock` | `hoard.lock.json` as a download |
+| `GET /atlas/pack?ids=…&padding=&max_size=&power_of_two=&extrude=&format=json\|phaser\|godot&res_path=` | Packed atlas as a zip (`atlas.png` + metadata) |
+| `GET /engine-hints?ids=…&engine=&project_id=&res_dir=` | Import recommendations per asset |
+
+Signed links (valid two hours, no token needed), handed out by the MCP tools:
+
+- `PUT /projects/{id}/repo/snapshot?exp=…&sig=…`: body of lines `sha256<TAB>size<TAB>path`, at most 8 MiB and 50 000 lines. Paths must be relative, valid UTF-8, at most 1024 bytes, without NUL or control characters and without `.`/`..`/empty segments. The whole upload is rejected on the first bad line (`400`); a valid one replaces the project's snapshot in one transaction. The signature is bound to the project.
+- `GET /projects/{id}/repo/lock-file?exp=…&sig=…`: the lock file, bound to the project.
+- `GET /atlas?ids=…&padding=…&max_size=…&power_of_two=…&extrude=…&format=…&res_path=…&exp=…&sig=…`: the signature covers the asset ids (in order) and every option.
+- `GET /derive/{assetId}/{filename}?width=&height=&scale=&filter=nearest\|linear&format=png\|jpeg&quality=&exp=…&sig=…`: the signature covers the asset, the file and every parameter; changing one gives `403`.
+
 ## Signed links
 
 MCP tools hand out links that need no token and expire after two hours:

@@ -103,6 +103,7 @@ func Open(dataDir string, log *slog.Logger) (*Service, error) {
 	}
 	s.protectDB()
 	s.startRebuild()
+	s.SweepDerived(context.Background())
 	return s, nil
 }
 
