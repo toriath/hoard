@@ -21,6 +21,7 @@ import (
 )
 
 type env struct {
+	svc    *hoard.Service
 	t      *testing.T
 	ts     *httptest.Server
 	client *http.Client // has a cookie jar: behaves like a browser session
@@ -40,7 +41,7 @@ func newEnv(t *testing.T) *env {
 	ts := httptest.NewServer(New(svc, ai.New(svc, cfg, log), cfg, log, "test", web))
 	t.Cleanup(ts.Close)
 	jar, _ := cookiejar.New(nil)
-	e := &env{t: t, ts: ts, client: &http.Client{Jar: jar}}
+	e := &env{t: t, ts: ts, client: &http.Client{Jar: jar}, svc: svc}
 
 	var out struct {
 		Secret string `json:"secret"`

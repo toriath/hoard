@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/toriath/hoard/internal/hoard"
 )
 
 type bearerTransport struct{ token string }
@@ -56,6 +58,15 @@ func TestMCPWithSDKClient(t *testing.T) {
 	text, ok := res.Content[0].(*mcp.TextContent)
 	if res.IsError || !ok || !strings.Contains(text.Text, `"coin_gold"`) {
 		t.Errorf("search result = %+v", res.Content[0])
+	}
+	// Changes over MCP are attributed to the token's user and name.
+	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "create_asset", Arguments: map[string]any{"name": "attributed"}})
+	if err != nil || res.IsError {
+		t.Fatalf("create_asset: %v %+v", err, res)
+	}
+	feed, err := e.svc.ListActivity(ctx, hoard.ActivityQuery{Action: "asset.create", Limit: 1})
+	if err != nil || len(feed) != 1 || feed[0].Via != "mcp" || feed[0].Actor != "alice via MCP (test)" {
+		t.Errorf("activity actor = %+v %v", feed, err)
 	}
 	// Schema validation happens before the handler: a wrong argument type is a readable tool error.
 	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "search_assets", Arguments: map[string]any{"limit": "many"}})

@@ -12,6 +12,7 @@ import type { Asset, AssetPatch } from '../lib/types'
 import { Preview } from '../preview/Preview'
 import { Button, Chip, Dialog, Field, Menu, Spinner, TagInput, TypeBadge, useConfirm } from '../ui'
 import { openAsset, setFilters } from './filters'
+import { AssetPanelsBottom, AssetPanelsTop } from './panels'
 
 export function AssetDrawer({ id }: { id: string }) {
   const loc = useLocation()
@@ -205,6 +206,8 @@ export function AssetDrawer({ id }: { id: string }) {
 
         <Preview asset={asset} file={file} />
 
+        <AssetPanelsTop asset={asset} onChange={apply} />
+
         {editing ? (
           <EditForm asset={asset} onCancel={() => setEditing(false)} onSaved={(a) => { apply(a); setEditing(false) }} />
         ) : (
@@ -346,6 +349,8 @@ export function AssetDrawer({ id }: { id: string }) {
             </div>
           )}
         </section>
+
+        <AssetPanelsBottom asset={asset} onChange={apply} />
 
         <section className="stack">
           <p className="eyebrow">Info</p>

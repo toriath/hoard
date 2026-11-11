@@ -44,12 +44,23 @@ export interface Asset {
   projects?: Ref[]
   ai_status?: '' | 'queued' | 'running' | 'done' | 'error'
   ai_error?: string
+  /** Review status; '' = not reviewed. */
+  status: AssetStatus
+  superseded_by?: string
+  derived_from?: string
+  /** Structured generation recipe: tool, model, seed, settings… */
+  generator?: Record<string, unknown>
   created_at: string
   updated_at: string
   deleted_at?: string
 }
 
+export type AssetStatus = '' | 'draft' | 'approved' | 'final' | 'rework' | 'rejected' | 'placeholder' | 'superseded'
+
 export interface AssetPatch {
+  status?: AssetStatus
+  derived_from?: string
+  generator?: Record<string, unknown>
   type?: string
   name?: string
   description?: string
@@ -175,6 +186,8 @@ export interface Filters {
   collection: string
   project: string
   license: string
+  /** Review statuses, any of; 'none' = not reviewed. */
+  statuses: string[]
   untagged: boolean
   trashed: boolean
   sort: string

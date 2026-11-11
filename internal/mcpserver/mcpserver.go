@@ -121,6 +121,13 @@ func NewHandler(svc *hoard.Service, agent *ai.Agent, version string, maxFileByte
 		Description: "Run hoard's built-in AI agent to describe and tag assets from their preview and files. With one id it runs immediately and returns the result; with several it queues them in the background. By default only gaps are filled (tags merged, empty description set, auto-derived names replaced); set `overwrite` to replace existing name, description and type. Requires an AI provider configured in the hoard settings. As a capable agent you can often do better yourself: view_asset, then update_asset."},
 		t.analyze)
 	t.addGallery(srv)
+	// Feature areas live in their own files; each registers its tools here.
+	t.addBriefTools(srv)    // brief.go: project briefs, fit checks, project reports, credits
+	t.addWorkTools(srv)     // work.go: asset requests, placeholders, review and rework steering, notes
+	t.addDeliveryTools(srv) // delivery.go: repository audit and sync, atlases, derivatives, engine hints
+	t.addLibraryTools(srv)  // library.go: duplicates, similarity, colours, imports
+	t.addHistoryTools(srv)  // history.go: activity feed, lineage and recipes
+	t.addPrompts(srv)       // prompts.go: ready-made workflows as MCP prompts
 
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv },
 		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, DisableLocalhostProtection: true})
@@ -198,6 +205,7 @@ type compact struct {
 	Description string   `json:"description,omitempty"`
 	Tags        []string `json:"tags"`
 	License     string   `json:"license,omitempty"`
+	Status      string   `json:"status,omitempty"`
 	Files       []string `json:"files"`
 	Size        int64    `json:"size"`
 	Dimensions  string   `json:"dimensions,omitempty"`
@@ -206,7 +214,7 @@ type compact struct {
 }
 
 func toCompact(a *hoard.Asset) compact {
-	c := compact{ID: a.ID, Type: a.Type, Name: a.Name, Tags: a.Tags, License: a.License, Size: a.TotalSize,
+	c := compact{ID: a.ID, Type: a.Type, Name: a.Name, Tags: a.Tags, License: a.License, Status: a.Status, Size: a.TotalSize,
 		HasPreview: a.ThumbVersion > 0, CreatedAt: a.CreatedAt, Files: []string{}}
 	c.Description = a.Description
 	if len(c.Description) > 240 {
@@ -280,6 +288,7 @@ type searchIn struct {
 	CollectionID string   `json:"collection_id,omitempty" jsonschema:"only assets in this collection"`
 	ProjectID    string   `json:"project_id,omitempty" jsonschema:"only assets used in this project; pass 'none' for assets not used in any project"`
 	License      string   `json:"license,omitempty" jsonschema:"exact license; pass 'none' for assets without license information"`
+	Statuses     []string `json:"statuses,omitempty" jsonschema:"review status, any of: none, draft, approved, final, rework, rejected, placeholder, superseded"`
 	Untagged     bool     `json:"untagged,omitempty" jsonschema:"only assets without any tag"`
 	Trashed      bool     `json:"trashed,omitempty" jsonschema:"search the trash instead of the library"`
 	Sort         string   `json:"sort,omitempty" jsonschema:"relevance (default with a query), created (default otherwise), updated, name, size or type"`
@@ -290,7 +299,7 @@ type searchIn struct {
 
 func (t *tools) search(ctx context.Context, _ *mcp.CallToolRequest, in searchIn) (*mcp.CallToolResult, any, error) {
 	q := hoard.ListQuery{Q: in.Query, Types: in.Types, Tags: in.Tags, Collection: in.CollectionID, Project: in.ProjectID,
-		License: in.License, Untagged: in.Untagged, Trashed: in.Trashed, Sort: in.Sort, Limit: in.Limit, Offset: in.Offset}
+		License: in.License, Statuses: in.Statuses, Untagged: in.Untagged, Trashed: in.Trashed, Sort: in.Sort, Limit: in.Limit, Offset: in.Offset}
 	if q.Limit <= 0 {
 		q.Limit = 25
 	}
@@ -420,6 +429,8 @@ type createIn struct {
 	LicenseURL    string         `json:"license_url,omitempty" jsonschema:"link to the license text"`
 	Attribution   string         `json:"attribution,omitempty" jsonschema:"credit line required or desired when using the asset"`
 	Attrs         map[string]any `json:"attrs,omitempty" jsonschema:"free-form technical attributes, e.g. {\"duration_s\": 1.2, \"bpm\": 120, \"frames\": 8, \"seed\": 42, \"model\": \"...\"}"`
+	DerivedFrom   string         `json:"derived_from,omitempty" jsonschema:"id of the asset this one was made from (a variation, edit, upscale or rework of it)"`
+	Generator     map[string]any `json:"generator,omitempty" jsonschema:"structured generation recipe so the asset can be reproduced or varied, e.g. {\"tool\": \"Draw Things\", \"model\": \"flux-1-schnell\", \"seed\": 42, \"steps\": 8, \"cfg\": 3.5, \"width\": 512, \"height\": 512, \"sampler\": \"...\", \"negative_prompt\": \"...\", \"loras\": [...]}. Put the prompt itself in prompt"`
 	CollectionIDs []string       `json:"collection_ids,omitempty" jsonschema:"collections to add the asset to"`
 	ProjectIDs    []string       `json:"project_ids,omitempty" jsonschema:"projects the asset is used in"`
 	ProjectNote   string         `json:"project_note,omitempty" jsonschema:"how/where the asset is used in those projects"`
@@ -443,6 +454,7 @@ func (t *tools) create(ctx context.Context, req *mcp.CallToolRequest, in createI
 		Source: strPtr(in.Source), SourceURL: strPtr(in.SourceURL), License: strPtr(in.License),
 		LicenseURL: strPtr(in.LicenseURL), Attribution: strPtr(in.Attribution),
 		AddTags: in.Tags, Attrs: in.Attrs, AddCollections: in.CollectionIDs, AddProjects: in.ProjectIDs, ProjectNote: in.ProjectNote,
+		DerivedFrom: strPtr(in.DerivedFrom), Generator: in.Generator,
 	}
 	a, err := t.svc.CreateAsset(ctx, input)
 	if err != nil {
@@ -538,6 +550,8 @@ type updateIn struct {
 	AddTags             []string       `json:"add_tags,omitempty"`
 	RemoveTags          []string       `json:"remove_tags,omitempty"`
 	Attrs               map[string]any `json:"attrs,omitempty" jsonschema:"merged into the existing attributes; a null value deletes a key"`
+	DerivedFrom         *string        `json:"derived_from,omitempty" jsonschema:"id of the asset this one was made from; empty string clears"`
+	Generator           map[string]any `json:"generator,omitempty" jsonschema:"replaces the structured generation recipe (tool, model, seed, settings); {} clears"`
 	AddCollectionIDs    []string       `json:"add_collection_ids,omitempty"`
 	RemoveCollectionIDs []string       `json:"remove_collection_ids,omitempty"`
 	AddProjectIDs       []string       `json:"add_project_ids,omitempty" jsonschema:"record that the asset is used in these projects"`
@@ -551,6 +565,7 @@ func (t *tools) update(ctx context.Context, _ *mcp.CallToolRequest, in updateIn)
 		License: in.License, LicenseURL: in.LicenseURL, Attribution: in.Attribution, Tags: in.Tags, AddTags: in.AddTags,
 		RemoveTags: in.RemoveTags, Attrs: in.Attrs, AddCollections: in.AddCollectionIDs, RemoveCollections: in.RemoveCollectionIDs,
 		AddProjects: in.AddProjectIDs, RemoveProjects: in.RemoveProjectIDs, ProjectNote: in.ProjectNote,
+		DerivedFrom: in.DerivedFrom, Generator: in.Generator,
 	})
 	if err != nil {
 		return nil, nil, err

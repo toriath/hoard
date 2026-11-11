@@ -58,6 +58,34 @@ var CommonLicenses = []string{
 	"Royalty-Free", "Proprietary", "AI-Generated (own)", "Commissioned", "Custom", "Unknown",
 }
 
+// AssetStatuses are the review states of an asset. "" means not reviewed.
+// placeholder and superseded are set by hoard itself (placeholders for open
+// requests, assets replaced by an accepted rework) but may also be set by hand.
+var AssetStatuses = []string{"", "draft", "approved", "final", "rework", "rejected", "placeholder", "superseded"}
+
+// ValidStatus reports whether st is a known review status.
+func ValidStatus(st string) bool {
+	for _, v := range AssetStatuses {
+		if v == st {
+			return true
+		}
+	}
+	return false
+}
+
+// NoteKinds classify notes on an asset. rework notes carry the feedback a
+// generator agent has to address.
+var NoteKinds = []string{"comment", "rework", "approval", "rejection"}
+
+// RequestStatuses are the states of an asset request:
+//
+//	open      waiting for someone to work on it
+//	claimed   a generator agent is working on it (the claim expires)
+//	submitted at least one candidate is waiting for review
+//	done      a candidate was accepted
+//	cancelled withdrawn
+var RequestStatuses = []string{"open", "claimed", "submitted", "done", "cancelled"}
+
 // CollectionKinds are the allowed kinds of collection.
 var CollectionKinds = []string{"pack", "style", "project", "other"}
 

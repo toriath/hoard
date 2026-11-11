@@ -192,6 +192,11 @@ func (s *Service) AddFile(ctx context.Context, assetID, filename string, r io.Re
 			res.DuplicateOf = append(res.DuplicateOf, id)
 		}
 		rows.Close()
+		verb := "added"
+		if res.Replaced {
+			verb = "replaced"
+		}
+		s.record(ctx, tx, "asset.file", assetID, f.ID, verb+" "+filename)
 		return reindex(ctx, tx, assetID)
 	})
 	if err != nil {
@@ -242,6 +247,7 @@ func (s *Service) DeleteFile(ctx context.Context, assetID, fileID string) error 
 		if err := refreshAggregates(ctx, tx, assetID); err != nil {
 			return err
 		}
+		s.record(ctx, tx, "asset.file", assetID, fileID, "deleted "+filename)
 		return reindex(ctx, tx, assetID)
 	})
 	if err != nil {

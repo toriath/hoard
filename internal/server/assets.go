@@ -96,6 +96,7 @@ func parseListQuery(r *http.Request) hoard.ListQuery {
 		Collection: q.Get("collection"),
 		Project:    q.Get("project"),
 		License:    q.Get("license"),
+		Statuses:   multi(r, "status"),
 		Untagged:   q.Get("untagged") == "1" || q.Get("untagged") == "true",
 		Trashed:    q.Get("trashed") == "1" || q.Get("trashed") == "true",
 		IDs:        multi(r, "ids"),

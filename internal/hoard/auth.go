@@ -24,6 +24,9 @@ type User struct {
 	ID        string `json:"id"`
 	Username  string `json:"username"`
 	CreatedAt string `json:"created_at"`
+
+	// TokenName is set when the user was authenticated with an API token.
+	TokenName string `json:"-"`
 }
 
 // APIToken is a long-lived bearer credential for the REST API and MCP.
@@ -348,8 +351,8 @@ func (s *Service) TokenUser(ctx context.Context, secret string) (*User, error) {
 	hash := sha(secret)
 	var u User
 	var tokenID string
-	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.username, u.created_at, t.id FROM api_tokens t
-		JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`, hash).Scan(&u.ID, &u.Username, &u.CreatedAt, &tokenID)
+	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.username, u.created_at, t.id, t.name FROM api_tokens t
+		JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?`, hash).Scan(&u.ID, &u.Username, &u.CreatedAt, &tokenID, &u.TokenName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

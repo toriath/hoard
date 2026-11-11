@@ -203,7 +203,7 @@ const SORTS: { id: string; label: string }[] = [
   { id: 'type', label: 'Type' },
 ]
 
-export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; header?: ReactNode; emptyHint?: ReactNode }) {
+export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?: Scope; header?: ReactNode; beforeGrid?: ReactNode; emptyHint?: ReactNode }) {
   const loc = useLocation()
   const filters = useMemo(() => readFilters(loc.query, scope), [loc.query.toString(), scope.collection, scope.project, scope.trashed]) // eslint-disable-line react-hooks/exhaustive-deps
   const { items, total, loading, error, loadMore, hasMore } = useAssetList(filters)
@@ -344,6 +344,7 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
   return (
     <div className="page library">
       {header}
+      {beforeGrid}
       <div className="toolbar">
         <div className="search">
           <Search aria-hidden />

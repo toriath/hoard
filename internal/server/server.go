@@ -105,6 +105,13 @@ func New(svc *hoard.Service, agent *ai.Agent, cfg config.Config, log *slog.Logge
 	session("POST /api/v1/settings/ai/test", s.handleTestAI)
 	session("POST /api/v1/settings/ai/models", s.handleAIModels)
 
+	// Feature areas live in their own files; each registers its routes here.
+	s.routesBrief(api)         // routes_brief.go
+	s.routesWork(api)          // routes_work.go
+	s.routesDelivery(api, pub) // routes_delivery.go (pub: signed links only)
+	s.routesLibrary(api)       // routes_library.go
+	s.routesHistory(api)       // routes_history.go
+
 	// Signed, expiring links handed out to agents (no session or token needed).
 	pub("GET /api/v1/dl/{id}/{filename}", s.handleSignedDownload)
 	pub("GET /api/v1/dl-zip", s.handleSignedZip)
@@ -127,6 +134,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.S
 // ---- plumbing ----
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
+
+// route registers a handler for a pattern such as "GET /api/v1/requests".
+type route func(pattern string, h handlerFunc)
 
 type apiError struct {
 	Status  int    `json:"-"`
@@ -284,8 +294,18 @@ func (s *Server) requireUser(h handlerFunc) handlerFunc {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="hoard"`)
 			return &apiError{http.StatusUnauthorized, "unauthorized", "authentication required: sign in, or send 'Authorization: Bearer <api token>'"}
 		}
-		return h(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
+		via := "web"
+		if bearer(r) != "" {
+			via = "api"
+		}
+		return h(w, r.WithContext(withUser(r.Context(), u, via)))
 	}
+}
+
+// withUser attaches the authenticated user and the matching activity actor.
+func withUser(ctx context.Context, u *hoard.User, via string) context.Context {
+	ctx = context.WithValue(ctx, userKey, u)
+	return hoard.WithActor(ctx, hoard.Actor{UserID: u.ID, Username: u.Username, Via: via, TokenName: u.TokenName})
 }
 
 // requireBearer guards the MCP endpoint: API tokens only, never cookies.
@@ -304,7 +324,7 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 		}
 		// Tool handlers build links from this; never trust a client-sent value.
 		r.Header.Set(mcpserver.BaseURLHeader, s.BaseURL(r))
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
+		next.ServeHTTP(w, r.WithContext(withUser(r.Context(), u, "mcp")))
 	})
 }
 

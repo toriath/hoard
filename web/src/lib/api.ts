@@ -18,7 +18,7 @@ export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn
 }
 
-async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {}
   let payload: BodyInit | undefined
   if (body instanceof Blob || body instanceof FormData || body instanceof ArrayBuffer) {
@@ -49,8 +49,8 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
   return (await res.json()) as T
 }
 
-const get = <T>(path: string, init?: RequestInit) => request<T>('GET', path, undefined, init)
-const post = <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {})
+export const get = <T>(path: string, init?: RequestInit) => request<T>('GET', path, undefined, init)
+export const post = <T>(path: string, body?: unknown) => request<T>('POST', path, body ?? {})
 
 export function filtersToQuery(f: Partial<Filters>, extra: Record<string, string | number> = {}): string {
   const p = new URLSearchParams()
@@ -60,6 +60,7 @@ export function filtersToQuery(f: Partial<Filters>, extra: Record<string, string
   if (f.collection) p.set('collection', f.collection)
   if (f.project) p.set('project', f.project)
   if (f.license) p.set('license', f.license)
+  if (f.statuses?.length) p.set('status', f.statuses.join(','))
   if (f.untagged) p.set('untagged', '1')
   if (f.trashed) p.set('trashed', '1')
   if (f.sort) p.set('sort', f.sort)
@@ -69,7 +70,7 @@ export function filtersToQuery(f: Partial<Filters>, extra: Record<string, string
 }
 
 /** Path segment for an id that may have come from the address bar. */
-const seg = (id: string) => encodeURIComponent(id)
+export const seg = (id: string) => encodeURIComponent(id)
 
 export const api = {
   // auth
