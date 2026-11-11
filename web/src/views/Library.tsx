@@ -619,7 +619,7 @@ function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Sc
         </div>
         <div className="field">
           <span className="label">Tags — assets must have all selected</span>
-          <input className="input" placeholder="Find a tag…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="input" placeholder="Find a tag…" aria-label="Find a tag" value={q} onChange={(e) => setQ(e.target.value)} />
           <div className="tagcloud">
             {tags.loading && <Spinner />}
             {!tags.loading && shown.length === 0 && <span className="faint">No tags{q ? ' match' : ' yet'}</span>}

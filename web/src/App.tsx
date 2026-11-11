@@ -107,6 +107,16 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
 
   return (
     <div className={cx('app', assetId && 'with-drawer')}>
+      <a
+        className="skip-link"
+        href="#main"
+        onClick={(e) => {
+          e.preventDefault()
+          document.getElementById('main')?.focus()
+        }}
+      >
+        Skip to content
+      </a>
       <nav className="sidebar" aria-label="Main">
         <a className="brand" {...link('/')}>
           <Logo />
@@ -141,7 +151,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
         </div>
       </nav>
 
-      <main className="main" id="main">
+      <main className="main" id="main" tabIndex={-1}>
         {page}
       </main>
 

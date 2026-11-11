@@ -958,7 +958,10 @@ img.pixel {
   border-bottom: 1px dashed var(--border-strong);
   background: transparent;
   font-size: 20px;
-  outline: 0;
+}
+.font-input:focus-visible {
+  border-bottom-style: solid;
+  border-bottom-color: var(--accent);
 }
 .preview-code {
   position: relative;
@@ -1353,4 +1356,24 @@ img.pixel {
 }
 .sprite-fps .input {
   width: 68px;
+}
+
+/* ---------- accessibility (quality lane) ---------- */
+.skip-link {
+  position: fixed;
+  top: var(--sp-2);
+  left: var(--sp-2);
+  z-index: calc(var(--z-menu) + 1);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: var(--fw-medium);
+  transform: translateY(-200%);
+}
+.skip-link:focus {
+  transform: none;
+}
+.main:focus {
+  outline: none;
 }

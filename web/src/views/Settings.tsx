@@ -97,7 +97,7 @@ function ConnectTab() {
           <p className="muted">Tokens let Claude (or any script) work with the library over MCP and the REST API. They cannot manage accounts, tokens or the AI provider. Each client should get its own, so you can revoke them one by one.</p>
         </div>
         <div className="row">
-          <input className="input grow" placeholder="Token name, e.g. Claude Code on MacBook" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !busy && create()} maxLength={80} />
+          <input className="input grow" aria-label="Token name" placeholder="Token name, e.g. Claude Code on MacBook" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !busy && create()} maxLength={80} />
           <Button variant="primary" icon={Plus} busy={busy} onClick={create}>
             Create token
           </Button>
@@ -483,8 +483,8 @@ function AccountTab({ onSignedOut }: { onSignedOut: () => void }) {
             }, toastError)
           }}
         >
-          <input className="input grow" style={{ flexBasis: 160 }} placeholder="New username" autoComplete="off" value={nu.username} onChange={(e) => setNu({ ...nu, username: e.target.value })} required />
-          <input className="input grow" style={{ flexBasis: 160 }} type="password" placeholder="Password (10+ characters)" autoComplete="new-password" minLength={10} value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} required />
+          <input className="input grow" style={{ flexBasis: 160 }} aria-label="New username" placeholder="New username" autoComplete="off" value={nu.username} onChange={(e) => setNu({ ...nu, username: e.target.value })} required />
+          <input className="input grow" style={{ flexBasis: 160 }} type="password" aria-label="Password for the new user" placeholder="Password (10+ characters)" autoComplete="new-password" minLength={10} value={nu.password} onChange={(e) => setNu({ ...nu, password: e.target.value })} required />
           <Button type="submit" icon={Plus}>
             Add user
           </Button>
