@@ -12,7 +12,7 @@ Errors have one shape:
 
 | Method & path | Purpose |
 | --- | --- |
-| `GET /assets` | List and search. Query: `q`, `type` (comma list, any of), `tag` (comma list, all of), `collection`, `project` (id or `none`), `license` (value or `none`), `untagged=1`, `trashed=1`, `sort` (`relevance`, `created`, `updated`, `name`, `size`, `type`), `order` (`asc`, `desc`), `limit` (max 500), `offset`, `ids` |
+| `GET /assets` | List and search. Query: `q`, `type` (comma list, any of), `tag` (comma list, all of), `collection`, `project` (id or `none`), `license` (value or `none`), `color` (comma list of at most 10 hex colours such as `ff3c3c`; each must be a dominant colour, at least 10 % of the picture), `untagged=1`, `trashed=1`, `sort` (`relevance`, `created`, `updated`, `name`, `size`, `type`), `order` (`asc`, `desc`), `limit` (max 500), `offset`, `ids` |
 | `POST /assets` | Create. Either a JSON body with metadata only, or `multipart/form-data` with an optional `meta` part (JSON, must come first) followed by one or more `file` parts |
 | `GET /assets/{id}` | One asset with files, collections and projects |
 | `PATCH /assets/{id}` | Partial update (see fields below) |
@@ -27,8 +27,22 @@ Errors have one shape:
 | `GET /assets/{id}/download` | The file, or a zip when the asset has several |
 | `GET /download?ids=a,b,c` | Zip of several assets, one folder each, including `asset.json` |
 | `GET` / `PUT` / `DELETE /assets/{id}/thumbnail` | Preview thumbnail; `PUT` takes an image as the request body |
+| `PUT /assets/{id}/technical` | `{ "attrs": { "duration_s": 2.5 } }`: records attributes measured by a client while rendering a preview. Only `duration_s` (≤ 1e7), `sample_rate` (≤ 1e6), `channels` (≤ 64), `width`, `height` (≤ 1e6) and `triangles` (≤ 1e9) are accepted, as non-negative numbers (whole numbers except `duration_s`); trashed assets are refused. Not an edit: the asset's `updated_at` and the activity feed are left alone |
 | `POST /assets/{id}/suggest` | Ask the AI agent for metadata without saving it |
 | `POST /assets/analyze` | `{ "ids": [...], "overwrite": false }` queues the AI agent |
+| `GET /assets/{id}/similar` | Look-alikes, best first: `{ "items": [{ "asset": {…}, "score": 0.94, "reasons": ["visually near-identical (distance 2)"], "distance": 2 }] }`. Reasons: `identical file`, `visually near-identical (distance n)` (n ≤ 5), `visually similar (distance n)` (n ≤ 10), `shares n tags`. `limit` (default 20, max 100) |
+| `GET /duplicates` | `{ "groups": [{ "kind": "identical" \| "near-identical", "reason": "…", "assets": [{…}] }] }`: up to 200 groups, identical ones and larger groups first, at most 30 assets per group |
+| `POST /import` | Import a zip archive as a pack. `multipart/form-data` with an `options` part (JSON, `{}` for the defaults) that must come before the one `file` part. See below |
+
+Upload responses (`POST /assets`, `POST /assets/{id}/files`, and the body of `PUT` upload links) report `duplicate_of` (assets holding byte-identical files) and `similar_to` (assets whose picture is within 5 bits of the new one's perceptual hash) when there are any.
+
+### Import options
+
+```json
+{ "mode": "per_file", "collection_name": "Kenney UI", "license": "CC0-1.0", "tags": ["ui"], "project_id": "prj_…" }
+```
+
+All fields are optional (but the `options` part itself must be sent, first). `mode` is `per_file` (default), `per_folder` or `single`; `license` overrides the licence detected in the archive. The response (`201`) holds `summary`, `collection_id`, `collection_name`, `license`, `license_source` (the file it was read from, or `options`), `attribution`, `assets` (`id`, `name`, `files`), `files`, `docs` (licence and readme files, never imported as assets), `license_conflict` (several licences found, none applied), `ai_not_queued` (assets the AI agent was not queued for; it is queued only for imports of at most 50 assets), `skipped`, `skipped_sample` and `failed` (`name`, `error`). An archive with more than 10 000 entries, one that unpacks to more than the upload limit, or one with an entry compressing more than 200:1 above 4 MiB is refused with `400 invalid` before anything is created; the archive itself may be at most the upload limit and 2 GiB.
 
 ### Patch fields
 
@@ -76,6 +90,28 @@ curl -H "Authorization: Bearer $HOARD_TOKEN" \
 
 Membership is changed through asset patches (`add_collections`, `add_projects`, …), single or bulk.
 
+## Activity, lineage and recipes
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /activity?asset=&since=&after=&action=&via=&limit=` | The change feed. `since` is an RFC 3339 time; `after` is a sequence number and returns only newer entries, oldest first, so a client can follow the last `seq` it saw. `action` and `via` take comma-separated lists: action prefixes such as `asset.`, `request.`, `asset.review`, `note.`, `project.`, and channels `web`, `api`, `mcp`, `system`. `limit` defaults to 50, at most 500. Without `after` the newest entries come first. Returns `{ "items": [...], "latest_seq": n }`; each item has `seq`, `at`, `actor`, `via`, `action`, `asset_id`, `ref_id`, `summary`, and `asset_name` and `thumb_version` while the asset exists (`asset_gone` when it was purged). `latest_seq` is the newest entry overall, also when the filter matched nothing |
+| `GET /assets/{id}/lineage` | `{ ancestors, children, siblings, supersedes, superseded_by_chain }`: compact asset records (`id`, `name`, `type`, `status`, `thumb_version`, `prompt`, `generator`). `ancestors` follows `derived_from` (nearest first, at most 20, cycle-safe); `children` and `siblings` skip trashed assets |
+| `GET /assets/{id}/recipe` | Prompt, `generator`, the `derived_from` chain, `variations`, `has_recipe` and a `reproduce` hint |
+
+Entries older than 365 days are pruned by the daily maintenance.
+
+## Project briefs, fit, report, credits
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /projects/{id}/brief` | The brief (`{}` when none). Also present as `brief` on the project |
+| `PATCH /projects/{id}/brief` | Merge a JSON object into the brief: fields present replace, `null` clears, absent fields stay. `400` with the reason when validation fails |
+| `GET /projects/{id}/report` | Health report: `verdict` (`ok`, `attention`, `problems`), `summary`, license problems, missing attribution, placeholders, assets needing work, fit issues, size against budget, open requests, `repo_drift` (only with a repository snapshot) |
+| `GET /projects/{id}/credits` | `{ "markdown", "asset_count", "needs_attention": [...] }` |
+| `GET /projects/{id}/credits.md` | The same Markdown as `text/markdown`, as an attachment named `CREDITS.md` |
+| `GET /projects/{id}/bundle` | Zip: one folder per asset (files and `asset.json`) plus `CREDITS.md`; rejected and superseded assets left out |
+| `POST /assets/{id}/fit` | Fit check. Body `{ "project_id": "…" }` for one project, empty for every project the asset is used in. Returns `{ "reports": [{ "project_id", "project_name", "has_brief", "errors", "warnings", "issues": [{ "severity", "code", "message" }] }] }`. A `POST` because it stores measured audio attributes when absent |
+
 ## Accounts and settings
 
 | Method & path | Purpose |
@@ -91,6 +127,52 @@ Membership is changed through asset patches (`add_collections`, `add_projects`, 
 
 Managing accounts, tokens and the AI provider needs a browser session: `POST`/`DELETE /users`, `POST`/`DELETE /tokens`, `POST /auth/password` and every write under `/settings/ai` answer `403 session_required` to an API token. Everything else works with either.
 
+## Game repository delivery
+
+Paths below are relative to `/api/v1`. All need a session or API token except the signed links.
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /projects/{id}/repo/audit` | Audit of the stored repository snapshot: `counts`, `known`, `unknown`, `missing`, `unlinked` (lists cut at 500, `truncated`) |
+| `GET /projects/{id}/repo/audit-command?root=…&extensions=png,ogg` | `{ "command": "…" }`: the shell command that uploads a snapshot. It contains a signed link, so treat the response like a credential |
+| `GET /projects/{id}/repo/sync` | The sync plan as JSON: `entries` (path, reason `missing`/`changed`/`unchanged`/`conflict`, asset, hash), `removals`, `warnings` |
+| `GET /projects/{id}/repo/lock` | `hoard.lock.json` as a download |
+| `GET /atlas/pack?ids=…&padding=&max_size=&power_of_two=&extrude=&format=json\|phaser\|godot&res_path=` | Packed atlas as a zip (`atlas.png` + metadata) |
+| `GET /engine-hints?ids=…&engine=&project_id=&res_dir=` | Import recommendations per asset |
+
+Signed links (valid two hours, no token needed), handed out by the MCP tools:
+
+- `PUT /projects/{id}/repo/snapshot?exp=…&sig=…`: body of lines `sha256<TAB>size<TAB>path`, at most 8 MiB and 50 000 lines. Paths must be relative, valid UTF-8, at most 1024 bytes, without NUL or control characters and without `.`/`..`/empty segments. The whole upload is rejected on the first bad line (`400`); a valid one replaces the project's snapshot in one transaction. The signature is bound to the project.
+- `GET /projects/{id}/repo/lock-file?exp=…&sig=…`: the lock file, bound to the project.
+- `GET /atlas?ids=…&padding=…&max_size=…&power_of_two=…&extrude=…&format=…&res_path=…&exp=…&sig=…`: the signature covers the asset ids (in order) and every option.
+- `GET /derive/{assetId}/{filename}?width=&height=&scale=&filter=nearest\|linear&format=png\|jpeg&quality=&exp=…&sig=…`: the signature covers the asset, the file and every parameter; changing one gives `403`.
+
+## Asset requests and review
+
+The request queue for generator agents, steering of assets and notes. Requests: `status` is `open` → `claimed` (a lease) → `submitted` → `done` (or `cancelled`); `kind` is `new` or `rework`. Everything that changes state is `POST` or `PATCH`; all endpoints accept a session or an API token.
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /requests?status=&project=&kind=&type=&mine=&target=&sort=&limit=` | List; `status` and `type` take comma-separated values, `project` may be `none`, `mine=1` only requests the caller holds, `sort=recent` newest change first. Returns `{ "items": […] }` with submissions |
+| `POST /requests` | Create: `title`, `description`, `asset_type`, `project_id`, `spec` (object, at most 16 KiB), `priority` (integer, higher first), `placeholder` (also generate one) |
+| `GET /requests/{id}` | One request with `submissions` (each with `verdict`, reviewer `feedback`) and, for rework, the open `notes` of the target asset |
+| `PATCH /requests/{id}` | Change `title`, `description`, `asset_type`, `spec`, `priority`, `project_id` of an unfinished request |
+| `POST /requests/{id}/cancel` | Withdraw |
+| `POST /requests/{id}/claim` | `{ "lease_minutes": 60 }` (max 1440); `409 conflict` if someone else holds it or it is not open. Atomic: of two simultaneous claims exactly one succeeds |
+| `POST /requests/{id}/renew` | Extend your lease |
+| `POST /requests/{id}/release` | Give it back (the claimer, or any browser session) |
+| `POST /requests/{id}/submit` | `{ "asset_ids": […], "note": "" }`: 1 to 20 existing, non-trashed assets |
+| `POST /requests/{id}/placeholder` | Generate (or return) the placeholder asset |
+| `POST /requests/{id}/submissions/{asset}/accept` | `{ "supersede": true }` (default): approve the candidate, finish the request, supersede the replaced asset and move its project usage |
+| `POST /requests/{id}/submissions/{asset}/reject` | `{ "feedback": "…" }` (required): rework note on the candidate, request back to open |
+| `GET /assets/{id}/review` | Status, notes (including resolved) and the requests the asset takes part in |
+| `POST /assets/{id}/review` | `{ "verdict": "approve" \| "reject" \| "rework", "feedback": "", "priority": 0, "project_id": "" }`; feedback is required for reject and rework. Rework creates or updates the asset's rework request and returns it |
+| `GET /assets/{id}/notes?open=1` | Notes oldest first; `open=1` leaves resolved ones out |
+| `POST /assets/{id}/notes` | `{ "body": "…", "kind": "comment" }` (`comment`, `rework`, `approval`, `rejection`; body at most 8 KiB) |
+| `POST /notes/{id}/resolve` | Mark a note as dealt with |
+
+Accepting or rejecting a submission needs a request in `submitted` and a candidate still pending (`409 conflict` otherwise). It is refused with `400` when the caller is the identity that submitted the candidate, unless the caller is a browser session. Reads never change state: a claim whose lease ran out is shown as `open` and settled by the next write.
+
 ## Signed links
 
 MCP tools hand out links that need no token and expire after two hours:
@@ -98,8 +180,10 @@ MCP tools hand out links that need no token and expire after two hours:
 - `PUT /upload/{assetId}/{filename}?exp=…&sig=…`
 - `GET /dl/{assetId}/{filename}?exp=…&sig=…`
 - `GET /dl-zip?ids=…&exp=…&sig=…`
+- `GET /dl-bundle/{projectId}?exp=…&sig=…`: the project bundle (assets and `CREDITS.md`)
+- `PUT /import/{filename}?o=…&exp=…&sig=…`: imports the zip in the request body as a pack. `o` is the URL-safe base64 of the import options, and the signature covers the file name and `o`, so a link cannot be reused with other options. The response is the import summary. A link can be used once; a second use answers `409 conflict`.
 
-A signature is bound to its expiry and to one file name of one asset (or, for a zip, to one exact list of assets). Upload links cannot write into a trashed asset. Revoking the API token that requested a link does not revoke the link.
+A signature is bound to its expiry and to one file name of one asset (for a zip, to one exact list of assets; for a bundle, to one project). Upload links cannot write into a trashed asset. Revoking the API token that requested a link does not revoke the link.
 
 ## Other endpoints
 

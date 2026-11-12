@@ -20,7 +20,7 @@ mode="${1:-all}"
 emit() { # name, version, dir
   found=0
   printf '\n## %s %s\n' "$1" "$2"
-  for f in "$3"/LICEN[CS]E* "$3"/COPYING* "$3"/NOTICE* "$3"/licen[cs]e*; do
+  for f in "$3"/LICEN[CS]E* "$3"/COPYING* "$3"/NOTICE* "$3"/licen[cs]e* "$3"/UNLICENSE*; do
     [ -f "$f" ] || continue
     case "$(basename "$f")" in *3RD-PARTY* | *3rd-party*) continue ;; esac # the dependency's own dependency list
     found=1

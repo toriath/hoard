@@ -9,9 +9,11 @@ import { useLocation } from '../lib/router'
 import { changed, emitAsset, getMeta, toast, toastError, useAssetUpdates, useQuery } from '../lib/store'
 import { canRenderThumb, ensureThumb } from '../lib/thumbs'
 import type { Asset, AssetPatch } from '../lib/types'
+import { AnimationFields, animationDraft, animationPatch } from './AnimationFields'
 import { Preview } from '../preview/Preview'
 import { Button, Chip, Dialog, Field, Menu, Spinner, TagInput, TypeBadge, useConfirm } from '../ui'
 import { openAsset, setFilters } from './filters'
+import { AssetPanelsBottom, AssetPanelsTop } from './panels'
 
 export function AssetDrawer({ id }: { id: string }) {
   const loc = useLocation()
@@ -205,6 +207,8 @@ export function AssetDrawer({ id }: { id: string }) {
 
         <Preview asset={asset} file={file} />
 
+        <AssetPanelsTop asset={asset} onChange={apply} />
+
         {editing ? (
           <EditForm asset={asset} onCancel={() => setEditing(false)} onSaved={(a) => { apply(a); setEditing(false) }} />
         ) : (
@@ -347,6 +351,8 @@ export function AssetDrawer({ id }: { id: string }) {
           )}
         </section>
 
+        <AssetPanelsBottom asset={asset} onChange={apply} />
+
         <section className="stack">
           <p className="eyebrow">Info</p>
           <dl className="props">
@@ -487,6 +493,7 @@ function EditForm({ asset, onCancel, onSaved }: { asset: Asset; onCancel: () => 
     name: asset.name, type: asset.type, description: asset.description, tags: asset.tags, prompt: asset.prompt, source: asset.source,
     source_url: asset.source_url, license: asset.license, license_url: asset.license_url, attribution: asset.attribution,
   })
+  const [anim, setAnim] = useState(() => animationDraft(asset.attrs))
   const [saving, setSaving] = useState(false)
   const [suggesting, setSuggesting] = useState(false)
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((cur) => ({ ...cur, [k]: v }))
@@ -504,6 +511,12 @@ function EditForm({ asset, onCancel, onSaved }: { asset: Asset; onCancel: () => 
       const removed = asset.tags.filter((t) => !f.tags.includes(t))
       if (added.length) patch.add_tags = added
       if (removed.length) patch.remove_tags = removed
+      const attrs = animationPatch(asset.attrs, anim)
+      if (attrs.error) {
+        toast(attrs.error, 'error')
+        return
+      }
+      if (Object.keys(attrs.patch).length) patch.attrs = attrs.patch
       onSaved(await api.update(asset.id, patch))
       toast('Saved')
     } catch (e) {
@@ -587,6 +600,7 @@ function EditForm({ asset, onCancel, onSaved }: { asset: Asset; onCancel: () => 
       <Field label="Attribution" hint="Credit line to show when the asset is used">
         <input className="input" value={f.attribution} onChange={(e) => set('attribution', e.target.value)} />
       </Field>
+      <AnimationFields value={anim} onChange={setAnim} />
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <Button onClick={onCancel}>Cancel</Button>
         <Button variant="primary" type="submit" busy={saving}>

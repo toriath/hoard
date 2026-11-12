@@ -70,6 +70,24 @@ func run() error {
 	go agent.Run(ctx)
 	go housekeeping(ctx, svc, cfg, log)
 
+	// Derived data for assets stored before it existed (image hashes, colours,
+	// waveform and font thumbnails). Stopped by shutdown, awaited before the
+	// database closes.
+	backfilled := make(chan struct{})
+	bctx, stopBackfill := context.WithCancel(ctx)
+	go func() {
+		defer close(backfilled)
+		svc.RunBackfill(bctx)
+	}()
+	defer func() {
+		stopBackfill()
+		select {
+		case <-backfilled:
+		case <-time.After(10 * time.Second):
+			log.Warn("backfill did not stop in time")
+		}
+	}()
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           server.New(svc, agent, cfg, log, version, web.FS()),
@@ -104,6 +122,12 @@ func housekeeping(ctx context.Context, svc *hoard.Service, cfg config.Config, lo
 		}
 		if err := svc.Backup(ctx, cfg.BackupKeep); err != nil {
 			log.Warn("backup", "err", err)
+		}
+		cutoff := time.Now().UTC().AddDate(0, 0, -hoard.ActivityRetentionDays).Format(time.RFC3339)
+		if n, err := svc.PruneActivity(ctx, cutoff); err != nil {
+			log.Warn("activity cleanup", "err", err)
+		} else if n > 0 {
+			log.Info("pruned old activity entries", "entries", n)
 		}
 		if cfg.TrashDays > 0 {
 			cutoff := time.Now().UTC().AddDate(0, 0, -cfg.TrashDays).Format(time.RFC3339)

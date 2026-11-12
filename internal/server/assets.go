@@ -96,6 +96,8 @@ func parseListQuery(r *http.Request) hoard.ListQuery {
 		Collection: q.Get("collection"),
 		Project:    q.Get("project"),
 		License:    q.Get("license"),
+		Statuses:   multi(r, "status"),
+		Colors:     multi(r, "color"),
 		Untagged:   q.Get("untagged") == "1" || q.Get("untagged") == "true",
 		Trashed:    q.Get("trashed") == "1" || q.Get("trashed") == "true",
 		IDs:        multi(r, "ids"),
@@ -137,6 +139,7 @@ func (s *Server) handleGetAsset(w http.ResponseWriter, r *http.Request) error {
 type uploadResult struct {
 	Asset      *hoard.Asset `json:"asset"`
 	Duplicates []string     `json:"duplicate_of,omitempty"`
+	SimilarTo  []string     `json:"similar_to,omitempty"` // near-identical pictures (perceptual hash)
 }
 
 // handleCreateAsset accepts either a JSON body (metadata only) or
@@ -164,7 +167,7 @@ func (s *Server) handleCreateAsset(w http.ResponseWriter, r *http.Request) error
 	}
 	var in hoard.AssetInput
 	var assetID string
-	var dups []string
+	var dups, similar []string
 	fail := func(err error) error {
 		if assetID != "" { // do not leave a half-uploaded asset behind, even if the client is gone
 			_, _ = s.svc.Bulk(context.WithoutCancel(ctx), hoard.BulkOp{IDs: []string{assetID}, Action: "purge"})
@@ -200,6 +203,7 @@ func (s *Server) handleCreateAsset(w http.ResponseWriter, r *http.Request) error
 				return fail(err)
 			}
 			dups = append(dups, res.DuplicateOf...)
+			similar = append(similar, res.SimilarTo...)
 		}
 	}
 	if assetID == "" {
@@ -210,7 +214,7 @@ func (s *Server) handleCreateAsset(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	s.agent.AutoEnqueue(ctx, assetID)
-	writeJSON(w, http.StatusCreated, uploadResult{Asset: a, Duplicates: dups})
+	writeJSON(w, http.StatusCreated, uploadResult{Asset: a, Duplicates: dups, SimilarTo: similar})
 	return nil
 }
 
@@ -222,7 +226,7 @@ func (s *Server) handleAddFiles(w http.ResponseWriter, r *http.Request) error {
 		return &apiError{http.StatusBadRequest, "invalid", "expected multipart/form-data with file parts"}
 	}
 	n := 0
-	var dups []string
+	var dups, similar []string
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
@@ -239,6 +243,7 @@ func (s *Server) handleAddFiles(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 		dups = append(dups, res.DuplicateOf...)
+		similar = append(similar, res.SimilarTo...)
 		n++
 	}
 	if n == 0 {
@@ -248,7 +253,7 @@ func (s *Server) handleAddFiles(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, uploadResult{Asset: a, Duplicates: dups})
+	writeJSON(w, http.StatusOK, uploadResult{Asset: a, Duplicates: dups, SimilarTo: similar})
 	return nil
 }
 
@@ -275,6 +280,8 @@ func (s *Server) handleSignedUpload(w http.ResponseWriter, r *http.Request) erro
 	if !s.svc.Verify("upload:"+id+":"+hoard.SanitizeFilename(filename), q.Get("exp"), q.Get("sig")) {
 		return &apiError{http.StatusForbidden, "forbidden", "upload link is invalid or has expired; request a new one"}
 	}
+	// The link carries no identity; the activity feed says where the change came from.
+	r = r.WithContext(hoard.WithActor(r.Context(), signedLinkActor))
 	return s.putFile(w, r, id, filename)
 }
 
@@ -434,14 +441,28 @@ var compressedExt = map[string]bool{
 	".zip": true, ".glb": true, ".woff": true, ".woff2": true, ".ktx2": true, ".usdz": true,
 }
 
+// zipFile is a generated file added to the root of an archive.
+type zipFile struct {
+	Name string
+	Data []byte
+}
+
 // writeZip streams an archive. With folders, every asset gets its own
 // directory containing its files and its asset.json metadata.
-func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, name string, assets []*hoard.Asset, folders bool) error {
+func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, name string, assets []*hoard.Asset, folders bool, extra ...zipFile) error {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	used := map[string]bool{}
+	for _, x := range extra { // generated files at the archive root, e.g. CREDITS.md
+		used[x.Name] = true
+		xw, err := zw.CreateHeader(&zip.FileHeader{Name: x.Name, Method: zip.Deflate, Modified: time.Now()})
+		if err != nil {
+			return nil
+		}
+		_, _ = xw.Write(x.Data)
+	}
 	for _, a := range assets {
 		prefix := ""
 		if folders {

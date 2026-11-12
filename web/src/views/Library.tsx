@@ -1,6 +1,6 @@
 import {
-  ArrowDownUp, Check, Download, FolderOpen, Gamepad2, LayoutGrid, List, Pause, Pencil, Play, RotateCcw, Search, SlidersHorizontal,
-  Sparkles, Trash2, Upload, X,
+  ArrowDownUp, Check, Copy, Download, FolderOpen, Gamepad2, LayoutGrid, List, Pause, Pencil, Play, RotateCcw, Search, SlidersHorizontal,
+  Grid2x2, Sparkles, Trash2, Upload, X,
 } from 'lucide-react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api, filtersToQuery, rawUrl, thumbUrl, zipUrl } from '../lib/api'
@@ -11,6 +11,9 @@ import { changed, emitAsset, getMeta, prefs, toast, toastError, typeLabel, useAs
 import { canRenderThumb, ensureThumb } from '../lib/thumbs'
 import type { Asset, AssetPatch, Filters } from '../lib/types'
 import { Button, Check as CheckBox, Chip, Dialog, Empty, Field, Menu, Spinner, TagInput, TypeBadge, cx, typeColor, typeIcon, useConfirm, useDebounced } from '../ui'
+import { AtlasDialog } from './AtlasDialog'
+import { CARD_STATUSES, STATUS_LABEL, StatusBadge } from '../ui/status'
+import { DuplicatesDialog } from './Duplicates'
 import { activeFilterCount, openAsset, readFilters, setFilters, type Scope } from './filters'
 import { useUpload } from './Upload'
 
@@ -147,6 +150,11 @@ const AssetCard = memo(function AssetCard({ asset, selected, selecting, playing,
         />
       </label>
       <PlayButton asset={asset} playing={playing} />
+      {CARD_STATUSES.includes(asset.status) && (
+        <span className="card-status">
+          <StatusBadge status={asset.status} />
+        </span>
+      )}
       {asset.ai_status === 'queued' || asset.ai_status === 'running' ? (
         <span className="card-flag" title="AI agent is analysing this asset">
           <Sparkles aria-hidden />
@@ -180,7 +188,9 @@ const AssetRow = memo(function AssetRow({ asset, selected, playing, onOpen, onTo
         <button type="button" className="name row-open truncate" onClick={(e) => { e.stopPropagation(); onOpen(asset, e) }}>
           {asset.name || 'Untitled'}
         </button>
-        <span className="row-tags truncate faint">{asset.tags.join(' · ')}</span>
+        <span className="row-tags truncate faint">
+          {CARD_STATUSES.includes(asset.status) && <StatusBadge status={asset.status} />} {asset.tags.join(' · ')}
+        </span>
       </span>
       <span className="col-type">
         <TypeBadge type={asset.type} />
@@ -203,7 +213,7 @@ const SORTS: { id: string; label: string }[] = [
   { id: 'type', label: 'Type' },
 ]
 
-export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; header?: ReactNode; emptyHint?: ReactNode }) {
+export function Library({ scope = {}, header, beforeGrid, emptyHint }: { scope?: Scope; header?: ReactNode; beforeGrid?: ReactNode; emptyHint?: ReactNode }) {
   const loc = useLocation()
   const filters = useMemo(() => readFilters(loc.query, scope), [loc.query.toString(), scope.collection, scope.project, scope.trashed]) // eslint-disable-line react-hooks/exhaustive-deps
   const { items, total, loading, error, loadMore, hasMore } = useAssetList(filters)
@@ -220,7 +230,9 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
   }
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [filterOpen, setFilterOpen] = useState(false)
+  const [dupOpen, setDupOpen] = useState(false)
   const [bulkEdit, setBulkEdit] = useState(false)
+  const [atlasOpen, setAtlasOpen] = useState(false)
   const anchor = useRef<string | null>(null)
 
   // Search box: local state, debounced into the URL.
@@ -335,6 +347,14 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
     }
   }
 
+  // While the index is rebuilt in the background, keep the list fresh.
+  const rebuilding = !!stats.data?.rebuilding
+  useEffect(() => {
+    if (!rebuilding) return
+    const t = setInterval(() => changed('assets'), 3000)
+    return () => clearInterval(t)
+  }, [rebuilding])
+
   const typeCounts = stats.data?.by_type ?? {}
   const typesShown = meta.types.filter((t) => typeCounts[t.id] || filters.types.includes(t.id))
   const nFilters = activeFilterCount(filters)
@@ -344,6 +364,12 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
   return (
     <div className="page library">
       {header}
+      {stats.data?.rebuilding && (
+        <p className="muted rebuild-note" role="status">
+          Rebuilding the library index from the files on disk. Assets appear as they are imported.
+        </p>
+      )}
+      {beforeGrid}
       <div className="toolbar">
         <div className="search">
           <Search aria-hidden />
@@ -377,6 +403,7 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
             { label: '', separator: true },
             { label: 'Grid view', icon: view === 'grid' ? Check : LayoutGrid, onSelect: () => chooseView('grid') },
             { label: 'List view', icon: view === 'list' ? Check : List, onSelect: () => chooseView('list') },
+            ...(scope.trashed ? [] : [{ label: '', separator: true }, { label: 'Find duplicates…', icon: Copy, onSelect: () => setDupOpen(true) }]),
           ]}
         />
         <div className="seg hide-sm" role="group" aria-label="View">
@@ -425,6 +452,17 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
           {filters.tags.map((t) => (
             <Chip key={t} active onRemove={() => setFilters(loc, { tags: filters.tags.filter((x) => x !== t) })}>
               #{t}
+            </Chip>
+          ))}
+          {filters.statuses.map((st) => (
+            <Chip key={st} active onRemove={() => setFilters(loc, { statuses: filters.statuses.filter((x) => x !== st) })}>
+              {st === 'none' ? 'Not reviewed' : STATUS_LABEL[st] ?? st}
+            </Chip>
+          ))}
+          {filters.colors.map((c) => (
+            <Chip key={c} active onRemove={() => setFilters(loc, { colors: filters.colors.filter((x) => x !== c) })}>
+              <span className="dot" style={{ background: '#' + c }} />
+              Colour #{c}
             </Chip>
           ))}
           {filters.license && (
@@ -545,6 +583,9 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
                 <Download aria-hidden />
                 <span className="hide-sm">Download</span>
               </a>
+              <Button size="sm" icon={Grid2x2} aria-label="Pack atlas" title="Pack the selected images into a texture atlas" onClick={() => setAtlasOpen(true)}>
+                <span className="hide-sm">Atlas</span>
+              </Button>
               <Button size="sm" variant="danger" icon={Trash2} aria-label="Move to trash" onClick={() => bulk('trash', {}, 'Moved %n to trash')}>
                 <span className="hide-sm">Trash</span>
               </Button>
@@ -555,6 +596,8 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
       )}
 
       {filterOpen && <FilterDialog filters={filters} scope={scope} onClose={() => setFilterOpen(false)} />}
+      {atlasOpen && <AtlasDialog ids={ids} onClose={() => setAtlasOpen(false)} />}
+      {dupOpen && <DuplicatesDialog onClose={() => setDupOpen(false)} />}
       {bulkEdit && (
         <BulkEditDialog
           count={selected.size}
@@ -571,6 +614,17 @@ export function Library({ scope = {}, header, emptyHint }: { scope?: Scope; head
 
 // ---------- filter dialog ----------
 
+const STATUS_FILTERS: [string, string][] = [['none', 'Not reviewed'], ...Object.entries(STATUS_LABEL)]
+
+// The server maps any hex colour to the nearest of its palette colours; these
+// are one vivid representative per hue plus black, grey and white.
+const COLOR_SWATCHES = [
+  { name: 'Red', hex: 'f24d4d' }, { name: 'Orange', hex: 'f2994d' }, { name: 'Yellow', hex: 'f2f24d' }, { name: 'Lime', hex: '99f24d' },
+  { name: 'Green', hex: '4df24d' }, { name: 'Teal', hex: '4df299' }, { name: 'Cyan', hex: '4df2f2' }, { name: 'Sky blue', hex: '4d99f2' },
+  { name: 'Blue', hex: '4d4df2' }, { name: 'Purple', hex: '994df2' }, { name: 'Magenta', hex: 'f24df2' }, { name: 'Pink', hex: 'f24d99' },
+  { name: 'Black', hex: '101010' }, { name: 'Dark grey', hex: '404040' }, { name: 'Grey', hex: '808080' }, { name: 'Light grey', hex: 'c0c0c0' }, { name: 'White', hex: 'f0f0f0' },
+]
+
 function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Scope; onClose: () => void }) {
   const loc = useLocation()
   const [q, setQ] = useState('')
@@ -585,7 +639,7 @@ function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Sc
       width={520}
       footer={
         <>
-          <Button variant="ghost" onClick={() => setFilters(loc, { tags: [], license: '', untagged: false, project: scope.project ? undefined : '' })}>
+          <Button variant="ghost" onClick={() => setFilters(loc, { tags: [], statuses: [], colors: [], license: '', untagged: false, project: scope.project ? undefined : '' })}>
             Clear all
           </Button>
           <Button variant="primary" onClick={onClose}>
@@ -606,6 +660,36 @@ function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Sc
             ))}
           </select>
         </Field>
+        <Field label="Review status">
+          <div className="row-wrap">
+            {STATUS_FILTERS.map(([id, label]) => (
+              <Chip
+                key={id}
+                active={filters.statuses.includes(id)}
+                onClick={() => setFilters(loc, { statuses: filters.statuses.includes(id) ? filters.statuses.filter((x) => x !== id) : [...filters.statuses, id] })}
+              >
+                {label}
+              </Chip>
+            ))}
+          </div>
+        </Field>
+        <div className="field">
+          <span className="label">Colour — pictures in which it is a main colour</span>
+          <div className="swatches" role="group" aria-label="Colour">
+            {COLOR_SWATCHES.map((c) => (
+              <button
+                key={c.hex}
+                type="button"
+                className="swatch"
+                style={{ background: '#' + c.hex }}
+                aria-pressed={filters.colors.includes(c.hex)}
+                aria-label={c.name}
+                title={c.name}
+                onClick={() => setFilters(loc, { colors: filters.colors.includes(c.hex) ? filters.colors.filter((x) => x !== c.hex) : [...filters.colors, c.hex] })}
+              />
+            ))}
+          </div>
+        </div>
         <div className="row-wrap">
           <CheckBox checked={filters.untagged} onChange={(v) => setFilters(loc, { untagged: v })}>
             Untagged only
@@ -618,7 +702,7 @@ function FilterDialog({ filters, scope, onClose }: { filters: Filters; scope: Sc
         </div>
         <div className="field">
           <span className="label">Tags — assets must have all selected</span>
-          <input className="input" placeholder="Find a tag…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="input" placeholder="Find a tag…" aria-label="Find a tag" value={q} onChange={(e) => setQ(e.target.value)} />
           <div className="tagcloud">
             {tags.loading && <Spinner />}
             {!tags.loading && shown.length === 0 && <span className="faint">No tags{q ? ' match' : ' yet'}</span>}

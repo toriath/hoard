@@ -44,12 +44,23 @@ export interface Asset {
   projects?: Ref[]
   ai_status?: '' | 'queued' | 'running' | 'done' | 'error'
   ai_error?: string
+  /** Review status; '' = not reviewed. */
+  status: AssetStatus
+  superseded_by?: string
+  derived_from?: string
+  /** Structured generation recipe: tool, model, seed, settings… */
+  generator?: Record<string, unknown>
   created_at: string
   updated_at: string
   deleted_at?: string
 }
 
+export type AssetStatus = '' | 'draft' | 'approved' | 'final' | 'rework' | 'rejected' | 'placeholder' | 'superseded'
+
 export interface AssetPatch {
+  status?: AssetStatus
+  derived_from?: string
+  generator?: Record<string, unknown>
   type?: string
   name?: string
   description?: string
@@ -116,6 +127,8 @@ export interface Stats {
   tags: number
   collections: number
   projects: number
+  /** The index is being rebuilt from the asset sidecars in the background. */
+  rebuilding?: boolean
 }
 
 export interface AssetType {
@@ -175,6 +188,10 @@ export interface Filters {
   collection: string
   project: string
   license: string
+  /** Review statuses, any of; 'none' = not reviewed. */
+  statuses: string[]
+  /** Hex colours without the hash sign; each must be a dominant colour of the picture. */
+  colors: string[]
   untagged: boolean
   trashed: boolean
   sort: string

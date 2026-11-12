@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -57,7 +58,11 @@ type Asset struct {
 	FileCount     int            `json:"file_count"`
 	Collections   []Ref          `json:"collections,omitempty"`
 	Projects      []Ref          `json:"projects,omitempty"`
-	AIStatus      string         `json:"ai_status,omitempty"` // "", queued, running, done, error
+	Status        string         `json:"status"`                  // review status, see AssetStatuses
+	SupersededBy  string         `json:"superseded_by,omitempty"` // asset that replaced this one
+	DerivedFrom   string         `json:"derived_from,omitempty"`  // asset this one was made from
+	Generator     map[string]any `json:"generator,omitempty"`     // generation recipe: tool, model, seed, settings…
+	AIStatus      string         `json:"ai_status,omitempty"`     // "", queued, running, done, error
 	AIError       string         `json:"ai_error,omitempty"`
 	CreatedAt     string         `json:"created_at"`
 	UpdatedAt     string         `json:"updated_at"`
@@ -95,10 +100,13 @@ type AssetInput struct {
 	License     *string        `json:"license,omitempty"`
 	LicenseURL  *string        `json:"license_url,omitempty"`
 	Attribution *string        `json:"attribution,omitempty"`
-	Tags        *[]string      `json:"tags,omitempty"`        // replaces all tags
-	AddTags     []string       `json:"add_tags,omitempty"`    // merged in
-	RemoveTags  []string       `json:"remove_tags,omitempty"` // removed
-	Attrs       map[string]any `json:"attrs,omitempty"`       // merged; null deletes a key
+	Tags        *[]string      `json:"tags,omitempty"`         // replaces all tags
+	AddTags     []string       `json:"add_tags,omitempty"`     // merged in
+	RemoveTags  []string       `json:"remove_tags,omitempty"`  // removed
+	Attrs       map[string]any `json:"attrs,omitempty"`        // merged; null deletes a key
+	Status      *string        `json:"status,omitempty"`       // review status, see AssetStatuses
+	DerivedFrom *string        `json:"derived_from,omitempty"` // asset id, "" clears
+	Generator   map[string]any `json:"generator,omitempty"`    // replaces the whole recipe; {} clears
 
 	AddCollections    []string `json:"add_collections,omitempty"`
 	RemoveCollections []string `json:"remove_collections,omitempty"`
@@ -114,17 +122,19 @@ func ValidAssetID(id string) bool { return reAssetID.MatchString(id) }
 
 const assetCols = `a.id, a.type, a.type_auto, a.name, a.name_auto, a.description, a.prompt, a.source, a.source_url,
 	a.license, a.license_url, a.attribution, a.attrs, a.primary_file_id, a.thumb_version, a.total_size,
-	a.file_count, a.ai_status, a.ai_error, a.created_at, a.updated_at, a.deleted_at`
+	a.file_count, a.ai_status, a.ai_error, a.created_at, a.updated_at, a.deleted_at,
+	a.status, a.superseded_by, a.derived_from, a.generator`
 
 type scanner interface{ Scan(dest ...any) error }
 
 func scanAsset(row scanner) (*Asset, error) {
 	var a Asset
-	var attrs string
+	var attrs, gen string
 	var deleted sql.NullString
 	err := row.Scan(&a.ID, &a.Type, &a.typeAuto, &a.Name, &a.nameAuto, &a.Description, &a.Prompt, &a.Source, &a.SourceURL,
 		&a.License, &a.LicenseURL, &a.Attribution, &attrs, &a.PrimaryFileID, &a.ThumbVersion, &a.TotalSize,
-		&a.FileCount, &a.AIStatus, &a.AIError, &a.CreatedAt, &a.UpdatedAt, &deleted)
+		&a.FileCount, &a.AIStatus, &a.AIError, &a.CreatedAt, &a.UpdatedAt, &deleted,
+		&a.Status, &a.SupersededBy, &a.DerivedFrom, &gen)
 	if err != nil {
 		return nil, err
 	}
@@ -133,6 +143,9 @@ func scanAsset(row scanner) (*Asset, error) {
 	}
 	a.Attrs = map[string]any{}
 	_ = json.Unmarshal([]byte(attrs), &a.Attrs)
+	if gen != "" && gen != "{}" {
+		_ = json.Unmarshal([]byte(gen), &a.Generator)
+	}
 	a.Tags = []string{}
 	a.Files = []File{}
 	a.PreviewKind = KindNone
@@ -253,6 +266,8 @@ type ListQuery struct {
 	Collection string   // collection id
 	Project    string   // project id, or "none" for assets not used in any project
 	License    string   // exact license, or "none" for assets without one
+	Statuses   []string // review status, any of ("none" matches "")
+	Colors     []string // hex colours; every one must be a dominant colour (see QuantizeColor)
 	Untagged   bool
 	Trashed    bool
 	IDs        []string // restrict to these ids
@@ -316,6 +331,31 @@ func (s *Service) ListAssets(ctx context.Context, q ListQuery) (*ListResult, err
 	for _, t := range NormalizeTags(q.Tags) {
 		where = append(where, `EXISTS (SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id AND t.tag = ?)`)
 		args = append(args, t)
+	}
+	if len(q.Statuses) > 0 {
+		sts := make([]any, 0, len(q.Statuses))
+		for _, st := range q.Statuses {
+			if st == "none" {
+				st = ""
+			}
+			if !ValidStatus(st) {
+				return nil, invalid("unknown status %q (valid: none, %s)", st, strings.Join(AssetStatuses[1:], ", "))
+			}
+			sts = append(sts, st)
+		}
+		where = append(where, `a.status IN (`+placeholders(len(sts))+`)`)
+		args = append(args, sts...)
+	}
+	if len(q.Colors) > MaxColorFilters {
+		return nil, invalid("at most %d colours can be searched at once", MaxColorFilters)
+	}
+	for _, c := range q.Colors {
+		bucket, err := QuantizeColor(c)
+		if err != nil {
+			return nil, err
+		}
+		where = append(where, `EXISTS (SELECT 1 FROM asset_colors ac WHERE ac.asset_id = a.id AND ac.color = ? AND ac.weight >= ?)`)
+		args = append(args, bucket, colorMatchWeight)
 	}
 	if q.Untagged {
 		where = append(where, `NOT EXISTS (SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id)`)
@@ -421,6 +461,7 @@ func (s *Service) CreateAsset(ctx context.Context, in AssetInput) (*Asset, error
 		if err := applyPatch(ctx, tx, id, in); err != nil {
 			return err
 		}
+		s.record(ctx, tx, "asset.create", id, "", deref(in.Name))
 		return reindex(ctx, tx, id)
 	})
 	if err != nil {
@@ -430,8 +471,38 @@ func (s *Service) CreateAsset(ctx context.Context, in AssetInput) (*Asset, error
 	return s.GetAsset(ctx, id)
 }
 
+// patchSummary lists the fields a patch touches, for the activity feed.
+func patchSummary(in AssetInput) string {
+	var f []string
+	add := func(ok bool, name string) {
+		if ok {
+			f = append(f, name)
+		}
+	}
+	add(in.Type != nil, "type")
+	add(in.Name != nil, "name")
+	add(in.Description != nil, "description")
+	add(in.Prompt != nil, "prompt")
+	add(in.Source != nil || in.SourceURL != nil, "source")
+	add(in.License != nil || in.LicenseURL != nil || in.Attribution != nil, "license")
+	add(in.Tags != nil || len(in.AddTags) > 0 || len(in.RemoveTags) > 0, "tags")
+	add(len(in.Attrs) > 0, "attributes")
+	add(in.DerivedFrom != nil || in.Generator != nil, "lineage")
+	add(len(in.AddCollections) > 0 || len(in.RemoveCollections) > 0, "collections")
+	add(len(in.AddProjects) > 0 || len(in.RemoveProjects) > 0, "projects")
+	if in.Status != nil {
+		st := *in.Status
+		if st == "" {
+			st = "none"
+		}
+		f = append(f, "status → "+st)
+	}
+	return strings.Join(f, ", ")
+}
+
 // UpdateAsset applies a partial update.
 func (s *Service) UpdateAsset(ctx context.Context, id string, in AssetInput) (*Asset, error) {
+	defer s.lockAssets(id)()
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		if err := assetExists(ctx, tx, id); err != nil {
 			return err
@@ -442,6 +513,7 @@ func (s *Service) UpdateAsset(ctx context.Context, id string, in AssetInput) (*A
 		if _, err := tx.ExecContext(ctx, `UPDATE assets SET updated_at = ? WHERE id = ?`, now(), id); err != nil {
 			return err
 		}
+		s.record(ctx, tx, "asset.update", id, "", patchSummary(in))
 		return reindex(ctx, tx, id)
 	})
 	if err != nil {
@@ -516,6 +588,41 @@ func applyPatch(ctx context.Context, tx *sql.Tx, id string, in AssetInput) error
 			return invalid("%s must be an http(s) URL", f.col)
 		}
 		set(f.col, v)
+	}
+	if in.Status != nil {
+		st := strings.ToLower(strings.TrimSpace(*in.Status))
+		if st == "none" {
+			st = ""
+		}
+		if !ValidStatus(st) {
+			return invalid("unknown status %q (valid: none, %s)", *in.Status, strings.Join(AssetStatuses[1:], ", "))
+		}
+		set("status", st)
+	}
+	if in.DerivedFrom != nil {
+		v := strings.TrimSpace(*in.DerivedFrom)
+		if v != "" {
+			if v == id {
+				return invalid("an asset cannot be derived from itself")
+			}
+			if !ValidAssetID(v) {
+				return invalid("derived_from must be an asset id")
+			}
+			if err := mustExist(ctx, tx, "assets", v); err != nil {
+				return err
+			}
+		}
+		set("derived_from", v)
+	}
+	if in.Generator != nil {
+		b, err := json.Marshal(in.Generator)
+		if err != nil {
+			return invalid("generator: %v", err)
+		}
+		if len(b) > 32<<10 {
+			return invalid("generator is too large (max 32 KiB)")
+		}
+		set("generator", string(b))
 	}
 	if len(in.Attrs) > 0 {
 		var cur string
@@ -645,6 +752,9 @@ func (s *Service) Bulk(ctx context.Context, op BulkOp) (int, error) {
 	if op.Patch.Name != nil {
 		return 0, invalid("name cannot be set in bulk")
 	}
+	// The locks cover the atomic database change only. Sidecars and removed
+	// directories follow after they are released (syncSidecar has its own lock).
+	unlock := s.lockAssets(op.IDs...)
 	ts := now()
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		for _, id := range op.IDs {
@@ -673,9 +783,16 @@ func (s *Service) Bulk(ctx context.Context, op BulkOp) (int, error) {
 			if err != nil {
 				return err
 			}
+			switch op.Action {
+			case "", "update":
+				s.record(ctx, tx, "asset.update", id, "", patchSummary(op.Patch))
+			default:
+				s.record(ctx, tx, "asset."+op.Action, id, "", "")
+			}
 		}
 		return nil
 	})
+	unlock()
 	if err != nil {
 		return 0, err
 	}
@@ -685,6 +802,7 @@ func (s *Service) Bulk(ctx context.Context, op BulkOp) (int, error) {
 				if err := os.RemoveAll(s.assetDir(id)); err != nil {
 					s.log.Warn("remove asset dir", "asset", id, "err", err)
 				}
+				s.removeDerived(id)
 			}
 		} else {
 			s.syncSidecar(ctx, id)
@@ -817,6 +935,35 @@ func (s *Service) assetLock(id string) *sync.Mutex {
 	h := fnv.New32a()
 	h.Write([]byte(id))
 	return &s.assetMu[h.Sum32()%uint32(len(s.assetMu))]
+}
+
+// lockAssets serialises mutations of the given assets: a change reads the
+// current state, writes the index and the sidecar, and no other change to the
+// same asset runs in between. The returned function releases the locks.
+// Stripes are taken in ascending order, so callers locking several assets
+// cannot deadlock each other. It is a different set of mutexes than
+// assetLock, which syncSidecar takes inside; never call lockAssets while
+// holding assetLock. Do not hold it while streaming an upload.
+func (s *Service) lockAssets(ids ...string) (unlock func()) {
+	var once sync.Once
+	var stripes []int
+	for _, id := range ids {
+		h := fnv.New32a()
+		h.Write([]byte(id))
+		stripes = append(stripes, int(h.Sum32()%uint32(len(s.mutateMu))))
+	}
+	slices.Sort(stripes)
+	stripes = slices.Compact(stripes)
+	for _, i := range stripes {
+		s.mutateMu[i].Lock()
+	}
+	return func() {
+		once.Do(func() {
+			for _, i := range slices.Backward(stripes) {
+				s.mutateMu[i].Unlock()
+			}
+		})
+	}
 }
 
 // TypeIsAuto reports whether the type is still the automatic guess.

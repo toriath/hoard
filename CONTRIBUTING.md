@@ -30,7 +30,7 @@ make test
 
 - **The title must be a [Conventional Commit](https://www.conventionalcommits.org)**, for example `fix(mcp): reject empty ids`. Pull requests are squash-merged, the title becomes the commit, and the release version is derived from it: `feat` is a minor release, `fix` and `perf` a patch, a `!` after the type a breaking change. `docs`, `ci`, `chore`, `refactor`, `test` and `build` release nothing. A check enforces the format.
 - Keep a pull request to one change. Update the docs (`README.md`, `docs/`) in the same pull request as the behaviour.
-- `make test` and `npm --prefix web run typecheck` must pass. Add or extend tests for behaviour you change; the existing tests exercise the service and the HTTP and MCP layers for real, which is the style to follow.
+- `make test` (Go tests, the web UI tests with vitest, the release-version tests) and `npm --prefix web run typecheck` must pass. UI logic and the primitives in `web/src/ui` are tested with vitest and Testing Library (`npm --prefix web test`, files named `*.test.ts(x)` next to the code); a test must not need a running server. Add or extend tests for behaviour you change; the existing tests exercise the service and the HTTP and MCP layers for real, which is the style to follow.
 - New UI controls, colours and sizes belong in the design system first (`web/src/styles`, `web/src/ui`), and should show up on the `/design` page.
 
 ## License

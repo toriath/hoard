@@ -7,6 +7,7 @@ import { changed, getMeta, toast, toastError, useQuery, useVersion } from '../li
 import type { Collection, Project } from '../lib/types'
 import { Button, Dialog, Empty, Field, Menu, Spinner, useConfirm } from '../ui'
 import { Library, ScopeHeader } from './Library'
+import { ProjectPanels } from './panels'
 
 type Kind = 'collection' | 'project'
 type Group = Collection | Project
@@ -235,6 +236,7 @@ export function GroupDetail({ kind, id }: { kind: Kind; id: string }) {
             }
           />
         }
+        beforeGrid={isProject(group) ? <ProjectPanels project={group} /> : undefined}
       />
       {editing && <GroupDialog kind={kind} group={group} onClose={() => setEditing(false)} />}
     </>

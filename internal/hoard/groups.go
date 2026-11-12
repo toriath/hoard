@@ -3,6 +3,7 @@ package hoard
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -33,6 +34,8 @@ type Project struct {
 	Covers      []string `json:"covers"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
+
+	Brief json.RawMessage `json:"brief"` // the project brief, see ProjectBrief ({} when none)
 }
 
 // GroupInput is the mutable part of a collection or project.
@@ -166,7 +169,7 @@ func (s *Service) DeleteCollection(ctx context.Context, id string) error {
 
 // ListProjects returns all projects with usage counts.
 func (s *Service) ListProjects(ctx context.Context) ([]Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT p.id, p.name, p.description, p.url, p.status, p.created_at, p.updated_at,
+	rows, err := s.db.QueryContext(ctx, `SELECT p.id, p.name, p.description, p.url, p.status, p.created_at, p.updated_at, p.brief,
 		(SELECT COUNT(*) FROM project_assets pa JOIN assets a ON a.id = pa.asset_id
 			WHERE pa.project_id = p.id AND a.deleted_at IS NULL)
 		FROM projects p ORDER BY p.name COLLATE NOCASE`)
@@ -176,10 +179,12 @@ func (s *Service) ListProjects(ctx context.Context) ([]Project, error) {
 	out := []Project{}
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.URL, &p.Status, &p.CreatedAt, &p.UpdatedAt, &p.AssetCount); err != nil {
+		var brief string
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.URL, &p.Status, &p.CreatedAt, &p.UpdatedAt, &brief, &p.AssetCount); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		p.Brief = json.RawMessage(brief)
 		out = append(out, p)
 	}
 	rows.Close()
@@ -392,6 +397,13 @@ func (s *Service) RenameTag(ctx context.Context, from, to string) (int, error) {
 				return err
 			}
 		}
+		if len(ids) > 0 && to != from {
+			target := to
+			if target == "" {
+				target = "(deleted)"
+			}
+			s.record(ctx, tx, "tag.rename", "", "", fmt.Sprintf("%s → %s (%d assets)", from, target, len(ids)))
+		}
 		return nil
 	})
 	if err != nil {
@@ -415,11 +427,12 @@ type Stats struct {
 	Tags        int            `json:"tags"`
 	Collections int            `json:"collections"`
 	Projects    int            `json:"projects"`
+	Rebuilding  bool           `json:"rebuilding"` // the index is being rebuilt from the sidecars in the background
 }
 
 // GetStats computes library statistics.
 func (s *Service) GetStats(ctx context.Context) (*Stats, error) {
-	st := &Stats{ByType: map[string]int{}, Licenses: []TagCount{}}
+	st := &Stats{ByType: map[string]int{}, Licenses: []TagCount{}, Rebuilding: s.rebuilding.Load()}
 	err := s.db.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM assets WHERE deleted_at IS NULL),
 		(SELECT COALESCE(SUM(file_count), 0) FROM assets WHERE deleted_at IS NULL),
@@ -464,4 +477,18 @@ func (s *Service) GetStats(ctx context.Context) (*Stats, error) {
 		return st, nil
 	}
 	return st, rows.Err()
+}
+
+// ProjectBriefJSON returns the stored brief of a project as raw JSON ({} when
+// none was saved). The brief's schema is documented with ProjectBrief.
+func (s *Service) ProjectBriefJSON(ctx context.Context, projectID string) (json.RawMessage, error) {
+	var b string
+	err := s.db.QueryRowContext(ctx, `SELECT brief FROM projects WHERE id = ?`, projectID).Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("project %q: %w", projectID, ErrNotFound)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
 }

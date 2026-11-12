@@ -1,11 +1,14 @@
 import { Download, FileQuestion, Pause, Play } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { fileDownloadUrl, rawUrl } from '../lib/api'
 import { stopPreview } from '../lib/audio'
 import { formatBytes, formatDuration } from '../lib/format'
+import { seekTarget } from '../lib/seek'
+import { parseSprite } from '../lib/sprite'
 import { MAX_DECODE_SECONDS, computePeaks, decodeAudio, drawWaveform, loadFont } from '../lib/thumbs'
 import type { Asset, AssetFile } from '../lib/types'
 import { Spinner, typeColor } from '../ui'
+import { SpritePreview } from './SpritePreview'
 import type { Viewer } from './three'
 
 /** Shows the best available preview for one file of an asset. */
@@ -23,7 +26,7 @@ export function Preview({ asset, file }: { asset: Asset; file: AssetFile | undef
   const url = rawUrl(asset.id, file.filename)
   switch (file.kind) {
     case 'image':
-      return <ImagePreview key={url} url={url} file={file} />
+      return <ImageOrSheet key={url} url={url} file={file} attrs={asset.attrs} />
     case 'audio':
       return <AudioPlayer key={url} url={url} file={file} color={typeColor(asset.type)} />
     case 'video':
@@ -53,6 +56,17 @@ export function Preview({ asset, file }: { asset: Asset; file: AssetFile | undef
         </div>
       )
   }
+}
+
+/** A sprite sheet plays; any other image is shown as is. */
+function ImageOrSheet({ url, file, attrs }: { url: string; file: AssetFile; attrs: Asset['attrs'] }) {
+  // Keyed on the content, not the object: a refetched asset with the same
+  // attributes must not restart a paused or scrubbed animation.
+  const key = JSON.stringify(attrs)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const sheet = useMemo(() => parseSprite(attrs, file), [key, file.width, file.height])
+  const still = <ImagePreview url={url} file={file} />
+  return sheet ? <SpritePreview url={url} sheet={sheet} sheetView={still} /> : still
 }
 
 function ImagePreview({ url, file }: { url: string; file: AssetFile }) {
@@ -126,12 +140,26 @@ function AudioPlayer({ url, color }: { url: string; file: AssetFile; color: stri
   }, [playing])
 
   const toggle = () => (audio.current?.paused ? audio.current.play() : audio.current?.pause())
-  const seek = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const seekTo = (t: number) => {
     const a = audio.current
     if (!a || !duration) return
-    const r = e.currentTarget.getBoundingClientRect()
-    a.currentTime = ((e.clientX - r.left) / r.width) * duration
+    a.currentTime = t
     setTime(a.currentTime)
+  }
+  const seek = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    seekTo(((e.clientX - r.left) / r.width) * duration)
+  }
+  const seekKey = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    if (e.key === ' ') {
+      e.preventDefault()
+      toggle()
+      return
+    }
+    const t = seekTarget(e.key, audio.current?.currentTime ?? time, duration)
+    if (t === null) return
+    e.preventDefault()
+    seekTo(t)
   }
 
   return (
@@ -146,7 +174,21 @@ function AudioPlayer({ url, color }: { url: string; file: AssetFile; color: stri
         onError={() => setWaveNote('This browser cannot play this file')}
         onEnded={() => setTime(0)}
       />
-      <canvas ref={canvas} className="wave" onClick={seek} />
+      <canvas
+        ref={canvas}
+        className="wave"
+        onClick={seek}
+        onKeyDown={seekKey}
+        tabIndex={duration ? 0 : -1}
+        role="slider"
+        aria-label="Seek"
+        aria-orientation="horizontal"
+        aria-disabled={!duration}
+        aria-valuemin={0}
+        aria-valuemax={duration ? Math.round(duration * 10) / 10 : 0}
+        aria-valuenow={Math.round(time * 10) / 10}
+        aria-valuetext={`${formatDuration(time)} of ${formatDuration(duration)}`}
+      />
       {!peaks && <div className="wave-placeholder muted">{waveNote}</div>}
       <div className="row audio-controls">
         <button className="btn btn-primary btn-icon play" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}>

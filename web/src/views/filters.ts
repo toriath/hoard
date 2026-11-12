@@ -12,6 +12,8 @@ export function readFilters(q: URLSearchParams, scope: Scope): Filters {
     types: list(q.get('type')),
     tags: list(q.get('tag')),
     license: q.get('license') ?? '',
+    statuses: list(q.get('status')),
+    colors: list(q.get('color')),
     untagged: q.get('untagged') === '1',
     sort: q.get('sort') ?? '',
     order: (q.get('order') as Filters['order']) ?? '',
@@ -29,6 +31,8 @@ export function setFilters(loc: Location, next: Partial<Filters>, opts: { replac
   if (next.types) set('type', next.types.join(','))
   if (next.tags) set('tag', next.tags.join(','))
   if (next.license !== undefined) set('license', next.license)
+  if (next.statuses) set('status', next.statuses.join(','))
+  if (next.colors) set('color', next.colors.join(','))
   if (next.untagged !== undefined) set('untagged', next.untagged ? '1' : '')
   if (next.project !== undefined) set('project', next.project)
   if (next.sort !== undefined) set('sort', next.sort)
@@ -38,7 +42,7 @@ export function setFilters(loc: Location, next: Partial<Filters>, opts: { replac
 }
 
 export function activeFilterCount(f: Filters): number {
-  return f.tags.length + (f.license ? 1 : 0) + (f.untagged ? 1 : 0) + (f.project === 'none' ? 1 : 0)
+  return f.tags.length + f.statuses.length + f.colors.length + (f.license ? 1 : 0) + (f.untagged ? 1 : 0) + (f.project === 'none' ? 1 : 0)
 }
 
 /** Opens / closes the asset drawer while keeping the current page and filters. */

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"path"
 	"strings"
 	"sync"
@@ -87,6 +88,7 @@ func New(svc *hoard.Service, agent *ai.Agent, cfg config.Config, log *slog.Logge
 	api("GET /api/v1/assets/{id}/thumbnail", s.handleGetThumb)
 	api("PUT /api/v1/assets/{id}/thumbnail", s.handlePutThumb)
 	api("DELETE /api/v1/assets/{id}/thumbnail", s.handleDeleteThumb)
+	api("PUT /api/v1/assets/{id}/technical", s.handlePutTechnical)
 	api("GET /api/v1/download", s.handleDownloadMany)
 
 	api("GET /api/v1/collections", s.handleListCollections)
@@ -104,6 +106,15 @@ func New(svc *hoard.Service, agent *ai.Agent, cfg config.Config, log *slog.Logge
 	session("PUT /api/v1/settings/ai", s.handlePutAI)
 	session("POST /api/v1/settings/ai/test", s.handleTestAI)
 	session("POST /api/v1/settings/ai/models", s.handleAIModels)
+
+	// Feature areas live in their own files; each registers its routes here.
+	// api requires a signed-in user or an API token; pub is only for signed,
+	// expiring links, whose handlers verify the signature themselves.
+	s.routesBrief(api, pub) // routes_brief.go
+	s.routesWork(api, pub)  // routes_work.go
+	s.routesDelivery(api, pub)
+	s.routesLibrary(api, pub) // routes_library.go
+	s.routesHistory(api, pub) // routes_history.go
 
 	// Signed, expiring links handed out to agents (no session or token needed).
 	pub("GET /api/v1/dl/{id}/{filename}", s.handleSignedDownload)
@@ -127,6 +138,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.S
 // ---- plumbing ----
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
+
+// route registers a handler for a pattern such as "GET /api/v1/requests".
+type route func(pattern string, h handlerFunc)
 
 type apiError struct {
 	Status  int    `json:"-"`
@@ -284,8 +298,18 @@ func (s *Server) requireUser(h handlerFunc) handlerFunc {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="hoard"`)
 			return &apiError{http.StatusUnauthorized, "unauthorized", "authentication required: sign in, or send 'Authorization: Bearer <api token>'"}
 		}
-		return h(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
+		via := "web"
+		if bearer(r) != "" {
+			via = "api"
+		}
+		return h(w, r.WithContext(withUser(r.Context(), u, via)))
 	}
+}
+
+// withUser attaches the authenticated user and the matching activity actor.
+func withUser(ctx context.Context, u *hoard.User, via string) context.Context {
+	ctx = context.WithValue(ctx, userKey, u)
+	return hoard.WithActor(ctx, hoard.Actor{UserID: u.ID, Username: u.Username, Via: via, TokenName: u.TokenName})
 }
 
 // requireBearer guards the MCP endpoint: API tokens only, never cookies.
@@ -304,7 +328,7 @@ func (s *Server) requireBearer(next http.Handler) http.Handler {
 		}
 		// Tool handlers build links from this; never trust a client-sent value.
 		r.Header.Set(mcpserver.BaseURLHeader, s.BaseURL(r))
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))
+		next.ServeHTTP(w, r.WithContext(withUser(r.Context(), u, "mcp")))
 	})
 }
 
@@ -315,12 +339,64 @@ func (s *Server) setSession(w http.ResponseWriter, r *http.Request, token string
 	})
 }
 
-func clientIP(r *http.Request) string {
+// clientIP names the client for the sign-in throttle. It is the peer address,
+// unless the peer is a configured trusted proxy: then it is the right-most
+// address in X-Forwarded-For that is not itself a trusted proxy (everything
+// to its left can be forged by the client). X-Forwarded-For from any other
+// peer is ignored.
+func (s *Server) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	peer, perr := netip.ParseAddr(host)
+	if perr != nil {
+		return host
+	}
+	if len(s.cfg.TrustedProxies) == 0 || !s.trusted(peer) {
+		return throttleKey(peer)
+	}
+	var hops []string
+	for _, h := range r.Header.Values("X-Forwarded-For") {
+		hops = append(hops, strings.Split(h, ",")...)
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if ap, err := netip.ParseAddrPort(hop); err == nil {
+			hop = ap.Addr().String()
+		}
+		a, err := netip.ParseAddr(hop)
+		if err != nil {
+			return throttleKey(peer) // garbage in the chain: do not guess
+		}
+		if !s.trusted(a) {
+			return throttleKey(a)
+		}
+	}
+	return throttleKey(peer)
+}
+
+// throttleKey is the canonical form of an address for the throttle: IPv4-
+// mapped addresses become IPv4, zones are dropped, and an IPv6 address stands
+// for its /64 (one subscriber typically owns a whole /64, so rotating through
+// it must not buy more attempts).
+func throttleKey(a netip.Addr) string {
+	a = a.Unmap().WithZone("")
+	if a.Is6() {
+		p, _ := a.Prefix(64)
+		return p.String()
+	}
+	return a.String()
+}
+
+func (s *Server) trusted(a netip.Addr) bool {
+	a = a.Unmap().WithZone("")
+	for _, p := range s.cfg.TrustedProxies {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // credentialBytes caps the body of sign-in, setup and password requests.
@@ -382,7 +458,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	// Throttle per account and, more loosely, per client address (which also
 	// covers attempts that spray many usernames). The attempt is counted
 	// before the password is checked, so a parallel burst cannot slip through.
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	key := ip + "|" + strings.ToLower(c.Username)
 	if !s.loginsByIP.take(ip) || !s.logins.take(key) {
 		return &apiError{http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts, try again in a few minutes"}

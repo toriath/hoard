@@ -1,17 +1,21 @@
-import { FolderOpen, Gamepad2, Library as LibraryIcon, Settings as SettingsIcon, Trash2 } from 'lucide-react'
+import { Activity as ActivityIcon, ClipboardList, FolderOpen, Gamepad2, Library as LibraryIcon, Settings as SettingsIcon, Tags as TagsIcon, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { api, setUnauthorizedHandler } from './lib/api'
 import { stopPreview } from './lib/audio'
 import { link, useLocation } from './lib/router'
 import { getMeta, refreshMeta, useQuery, useVersion } from './lib/store'
 import { ConfirmProvider, Spinner, Toasts, cx, typeColor } from './ui'
+import { ActivityPage } from './views/Activity'
 import { AssetDrawer } from './views/AssetDetail'
 import { AuthScreen, Logo } from './views/Auth'
+import { BottomNav } from './views/BottomNav'
 import { DesignSystem } from './views/DesignSystem'
 import { currentAssetId, openAsset } from './views/filters'
 import { GroupDetail, GroupList } from './views/Groups'
 import { Library } from './views/Library'
+import { RequestsPage } from './views/Requests'
 import { Settings } from './views/Settings'
+import { TagsPage } from './views/Tags'
 import { UploadProvider } from './views/Upload'
 
 type Session = 'loading' | 'setup' | 'signed-out' | 'ready' | 'offline'
@@ -71,6 +75,9 @@ const NAV = [
   { to: '/', label: 'Library', icon: LibraryIcon, match: (p: string) => p === '/' || p.startsWith('/assets/') },
   { to: '/collections', label: 'Collections', icon: FolderOpen, match: (p: string) => p.startsWith('/collections') },
   { to: '/projects', label: 'Projects', icon: Gamepad2, match: (p: string) => p.startsWith('/projects') },
+  { to: '/requests', label: 'Requests', icon: ClipboardList, match: (p: string) => p.startsWith('/requests') },
+  { to: '/tags', label: 'Tags', icon: TagsIcon, match: (p: string) => p === '/tags' },
+  { to: '/activity', label: 'Activity', icon: ActivityIcon, match: (p: string) => p === '/activity' },
   { to: '/trash', label: 'Trash', icon: Trash2, match: (p: string) => p === '/trash' },
   { to: '/settings', label: 'Settings', icon: SettingsIcon, match: (p: string) => p.startsWith('/settings') || p === '/design' },
 ]
@@ -88,6 +95,9 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
   let page
   if (seg[0] === 'collections') page = seg[1] ? <GroupDetail key={seg[1]} kind="collection" id={seg[1]} /> : <GroupList kind="collection" />
   else if (seg[0] === 'projects') page = seg[1] ? <GroupDetail key={seg[1]} kind="project" id={seg[1]} /> : <GroupList kind="project" />
+  else if (seg[0] === 'requests') page = <RequestsPage />
+  else if (seg[0] === 'tags') page = <TagsPage />
+  else if (seg[0] === 'activity') page = <ActivityPage />
   else if (seg[0] === 'trash') page = <Library key="trash" scope={{ trashed: true }} header={<div className="page-head"><div><h1>Trash</h1><p className="muted">{meta.trash_days > 0 ? `Trashed assets are deleted for good after ${meta.trash_days} days.` : 'Trashed assets stay here until you delete them for good.'}</p></div></div>} />
   else if (seg[0] === 'settings') page = <Settings tab={seg[1] ?? 'connect'} onSignedOut={onSignedOut} />
   else if (seg[0] === 'design') page = <DesignSystem />
@@ -97,6 +107,16 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
 
   return (
     <div className={cx('app', assetId && 'with-drawer')}>
+      <a
+        className="skip-link"
+        href="#main"
+        onClick={(e) => {
+          e.preventDefault()
+          document.getElementById('main')?.focus()
+        }}
+      >
+        Skip to content
+      </a>
       <nav className="sidebar" aria-label="Main">
         <a className="brand" {...link('/')}>
           <Logo />
@@ -131,7 +151,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
         </div>
       </nav>
 
-      <main className="main" id="main">
+      <main className="main" id="main" tabIndex={-1}>
         {page}
       </main>
 
@@ -142,14 +162,7 @@ function Shell({ onSignedOut }: { onSignedOut: () => void }) {
         </>
       )}
 
-      <nav className="bottomnav" aria-label="Main">
-        {NAV.map((n) => (
-          <a key={n.to} aria-current={n.match(loc.path) ? 'page' : undefined} {...link(n.to)}>
-            <n.icon aria-hidden />
-            <span>{n.label}</span>
-          </a>
-        ))}
-      </nav>
+      <BottomNav items={NAV} path={loc.path} />
 
       <datalist id="license-list">
         {meta.licenses.map((l) => (

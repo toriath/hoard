@@ -958,7 +958,10 @@ img.pixel {
   border-bottom: 1px dashed var(--border-strong);
   background: transparent;
   font-size: 20px;
-  outline: 0;
+}
+.font-input:focus-visible {
+  border-bottom-style: solid;
+  border-bottom-color: var(--accent);
 }
 .preview-code {
   position: relative;
@@ -1205,7 +1208,11 @@ img.pixel {
     background: color-mix(in srgb, var(--surface-1) 92%, transparent);
     backdrop-filter: blur(12px);
   }
-  .bottomnav a {
+  .bottomnav > span {
+    display: flex;
+  }
+  .bottomnav a,
+  .bottomnav button {
     display: grid;
     place-content: center;
     justify-items: center;
@@ -1214,10 +1221,19 @@ img.pixel {
     font-size: 10px;
     font-weight: var(--fw-medium);
   }
+  .bottomnav button {
+    flex: 1;
+    border: 0;
+    background: none;
+    font-family: inherit;
+    cursor: pointer;
+  }
   .bottomnav a:hover {
     text-decoration: none;
   }
-  .bottomnav a[aria-current='page'] {
+  .bottomnav a[aria-current='page'],
+  .bottomnav button[aria-current='page'],
+  .bottomnav button[aria-expanded='true'] {
     color: var(--accent);
   }
   .bottomnav svg {
@@ -1292,4 +1308,72 @@ img.pixel {
   .col-date {
     display: none;
   }
+}
+
+/* ---------- animated sprite-sheet preview (quality lane) ---------- */
+.sprite-stage {
+  padding: var(--sp-5);
+}
+.sprite-canvas {
+  display: block;
+  height: auto;
+}
+.sprite-canvas.pixel {
+  image-rendering: pixelated;
+}
+.sprite-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+.sprite-controls .play {
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+}
+.sprite-controls .play svg {
+  fill: currentColor;
+}
+.sprite-scrub {
+  flex: 1 1 140px;
+  min-width: 100px;
+  accent-color: var(--accent);
+}
+.sprite-count {
+  min-width: 4ch;
+  text-align: right;
+}
+.sprite-anim {
+  width: auto;
+  min-width: 110px;
+}
+.sprite-fps {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.sprite-fps .input {
+  width: 68px;
+}
+
+/* ---------- accessibility (quality lane) ---------- */
+.skip-link {
+  position: fixed;
+  top: var(--sp-2);
+  left: var(--sp-2);
+  z-index: calc(var(--z-menu) + 1);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: var(--fw-medium);
+  transform: translateY(-200%);
+}
+.skip-link:focus {
+  transform: none;
+}
+.main:focus {
+  outline: none;
 }

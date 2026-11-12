@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no CGO)
@@ -53,9 +54,15 @@ type Service struct {
 	secret  []byte // HMAC key for signed URLs
 
 	thumbSem chan struct{}  // one image is decoded at a time
+	mediaSem chan struct{}  // one audio file or font is analysed at a time, apart from images
 	assetMu  [64]sync.Mutex // serialises sidecar writes per asset (striped)
+	mutateMu [64]sync.Mutex // serialises mutations of one asset (striped); always taken before assetMu
 	tokenMu  sync.Mutex
 	tokenUse map[string]time.Time // throttles last_used_at writes
+
+	rebuildCancel context.CancelFunc // set while a startup import of the sidecars runs
+	rebuildDone   chan struct{}
+	rebuilding    atomic.Bool
 }
 
 // Open opens (and if necessary creates) the library in dataDir.
@@ -85,6 +92,7 @@ func Open(dataDir string, log *slog.Logger) (*Service, error) {
 		dataDir:  dataDir,
 		log:      log,
 		thumbSem: make(chan struct{}, 1),
+		mediaSem: make(chan struct{}, 1),
 		tokenUse: map[string]time.Time{},
 	}
 	if err := s.migrate(); err != nil {
@@ -96,6 +104,8 @@ func Open(dataDir string, log *slog.Logger) (*Service, error) {
 		return nil, err
 	}
 	s.protectDB()
+	s.startRebuild()
+	s.SweepDerived(context.Background())
 	return s, nil
 }
 
@@ -111,7 +121,13 @@ func (s *Service) protectDB() {
 }
 
 // Close releases the database.
-func (s *Service) Close() error { return s.db.Close() }
+func (s *Service) Close() error {
+	if s.rebuildDone != nil {
+		s.rebuildCancel()
+		<-s.rebuildDone
+	}
+	return s.db.Close()
+}
 
 // DataDir returns the library root.
 func (s *Service) DataDir() string { return s.dataDir }
@@ -227,6 +243,103 @@ CREATE VIRTUAL TABLE assets_fts USING fts5(
 	tokenize = 'unicode61 remove_diacritics 2', prefix = '2 3'
 );
 `,
+	// 2: hoard as a development companion. Review status and lineage on
+	// assets, notes, project briefs, the asset request queue for generator
+	// agents, repository snapshots, similarity data and the activity feed.
+	`
+ALTER TABLE assets ADD COLUMN status        TEXT NOT NULL DEFAULT '';   -- see AssetStatuses
+ALTER TABLE assets ADD COLUMN superseded_by TEXT NOT NULL DEFAULT '';   -- asset id that replaced this one
+ALTER TABLE assets ADD COLUMN derived_from  TEXT NOT NULL DEFAULT '';   -- asset id this one was made from
+ALTER TABLE assets ADD COLUMN generator     TEXT NOT NULL DEFAULT '{}'; -- structured generation recipe (JSON)
+CREATE INDEX assets_status ON assets(deleted_at, status);
+CREATE INDEX assets_derived ON assets(derived_from);
+
+ALTER TABLE asset_files ADD COLUMN phash TEXT NOT NULL DEFAULT '';      -- perceptual hash of images (hex)
+
+CREATE TABLE asset_colors (
+	asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+	color    TEXT NOT NULL,  -- quantised colour bucket, e.g. "#3060c0"
+	weight   REAL NOT NULL,  -- share of the image, 0..1
+	PRIMARY KEY (asset_id, color)
+) WITHOUT ROWID;
+CREATE INDEX asset_colors_color ON asset_colors(color);
+
+CREATE TABLE asset_notes (
+	id         TEXT PRIMARY KEY,                  -- not_…
+	asset_id   TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+	kind       TEXT NOT NULL DEFAULT 'comment',   -- see NoteKinds
+	body       TEXT NOT NULL,
+	author     TEXT NOT NULL DEFAULT '',          -- display form of the actor
+	created_at TEXT NOT NULL,
+	resolved_at TEXT
+);
+CREATE INDEX asset_notes_asset ON asset_notes(asset_id, created_at);
+
+ALTER TABLE projects ADD COLUMN brief TEXT NOT NULL DEFAULT '{}';       -- ProjectBrief (JSON)
+
+CREATE TABLE asset_requests (
+	id                   TEXT PRIMARY KEY,                -- req_…
+	project_id           TEXT REFERENCES projects(id) ON DELETE SET NULL,
+	kind                 TEXT NOT NULL DEFAULT 'new',     -- new | rework
+	title                TEXT NOT NULL,
+	description          TEXT NOT NULL DEFAULT '',
+	asset_type           TEXT NOT NULL DEFAULT '',
+	spec                 TEXT NOT NULL DEFAULT '{}',      -- free-form constraints (JSON): size, duration, palette, format…
+	target_asset_id      TEXT REFERENCES assets(id) ON DELETE CASCADE,  -- rework: the asset to redo
+	placeholder_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+	accepted_asset_id    TEXT REFERENCES assets(id) ON DELETE SET NULL,
+	status               TEXT NOT NULL DEFAULT 'open',    -- see RequestStatuses
+	priority             INTEGER NOT NULL DEFAULT 0,      -- higher first
+	claimed_by           TEXT NOT NULL DEFAULT '',
+	claim_expires_at     TEXT,
+	created_by           TEXT NOT NULL DEFAULT '',
+	created_at           TEXT NOT NULL,
+	updated_at           TEXT NOT NULL,
+	closed_at            TEXT
+);
+CREATE INDEX asset_requests_status ON asset_requests(status, priority DESC, created_at);
+CREATE INDEX asset_requests_project ON asset_requests(project_id);
+CREATE INDEX asset_requests_target ON asset_requests(target_asset_id);
+
+CREATE TABLE request_submissions (
+	request_id   TEXT NOT NULL REFERENCES asset_requests(id) ON DELETE CASCADE,
+	asset_id     TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+	note         TEXT NOT NULL DEFAULT '',
+	verdict      TEXT NOT NULL DEFAULT '',  -- '' (pending) | accepted | rejected
+	submitted_by TEXT NOT NULL DEFAULT '',
+	submitted_at TEXT NOT NULL,
+	PRIMARY KEY (request_id, asset_id)
+) WITHOUT ROWID;
+CREATE INDEX request_submissions_asset ON request_submissions(asset_id);
+
+CREATE TABLE project_files (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	path       TEXT NOT NULL,          -- relative path inside the game repository
+	sha256     TEXT NOT NULL,
+	size       INTEGER NOT NULL DEFAULT 0,
+	asset_id   TEXT REFERENCES assets(id) ON DELETE SET NULL,
+	seen_at    TEXT NOT NULL,
+	PRIMARY KEY (project_id, path)
+) WITHOUT ROWID;
+CREATE INDEX project_files_sha ON project_files(sha256);
+
+CREATE TABLE activity (
+	seq      INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused, even after pruning: clients poll with after_seq
+	at       TEXT NOT NULL,
+	actor    TEXT NOT NULL DEFAULT '',  -- display form, e.g. "toriath via MCP (claude-code)"
+	user_id  TEXT NOT NULL DEFAULT '',
+	via      TEXT NOT NULL DEFAULT '',  -- web | api | mcp | system
+	action   TEXT NOT NULL,             -- e.g. asset.create, asset.update, request.claim
+	asset_id TEXT NOT NULL DEFAULT '',  -- no foreign key: history outlives purged assets
+	ref_id   TEXT NOT NULL DEFAULT '',  -- other object involved (request, project, note…)
+	summary  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX activity_at ON activity(at);
+CREATE INDEX activity_asset ON activity(asset_id, seq);
+`,
+	// 3: the authenticated identity (user, channel, token) that submitted a
+	// candidate, without the caller-chosen agent label, for the self-review rule.
+	`ALTER TABLE request_submissions ADD COLUMN submitted_key TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Service) migrate() error {
