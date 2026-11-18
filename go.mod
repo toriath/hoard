@@ -7,7 +7,7 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/mewkiz/flac v1.0.14
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.48.0
 	modernc.org/sqlite v1.62.0
 )
