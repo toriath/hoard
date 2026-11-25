@@ -4,7 +4,7 @@
 # Dependabot proposes base updates as pull requests (which become releases).
 
 # ---- web UI ----
-FROM --platform=$BUILDPLATFORM node:26-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216 AS web
+FROM --platform=$BUILDPLATFORM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS web
 WORKDIR /src
 COPY web/package.json web/package-lock.json web/
 RUN cd web && npm ci
@@ -14,7 +14,7 @@ COPY scripts/third-party-notices.sh scripts/
 RUN sh scripts/third-party-notices.sh npm > /notices-npm.md
 
 # ---- server (static, CGO-free binary; cross-compiled, no emulation) ----
-FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:eb61c3873c97416fff0116553fff65d67a3549f72e11d9758849a689cdd8b523 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS build
 ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
